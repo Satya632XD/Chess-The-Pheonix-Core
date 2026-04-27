@@ -4,6 +4,26 @@ const PIECES = {
   wk:'♔', wq:'♕', wr:'♖', wb:'♗', wn:'♘', wp:'♙',
   bk:'♚', bq:'♛', br:'♜', bb:'♝', bn:'♞', bp:'♟',
 };
+function ChessPiece({ piece, isSelected, isDragging }) {
+  const char = getPieceChar(piece);
+  const isWhite = piece?.color === 'w';
+  return (
+    <span
+      className={`select-none text-center leading-none transition-transform duration-150 ${isSelected ? 'scale-110' : 'scale-100'} ${isDragging ? 'scale-125 opacity-80' : ''}`}
+      style={{
+        fontSize: 'clamp(22px, 4.5vw, 46px)',
+        userSelect: 'none',
+        color: isWhite ? '#ffffff' : '#1a1a1a',
+        WebkitTextStroke: isWhite ? '1.5px #333333' : '1.5px #ffffff',
+        filter: isWhite
+          ? 'drop-shadow(0 1px 3px rgba(0,0,0,0.9))'
+          : 'drop-shadow(0 1px 3px rgba(255,255,255,0.3))',
+      }}
+    >
+      {char}
+    </span>
+  );
+}
 
 const FILES = ['a','b','c','d','e','f','g','h'];
 const RANKS = [8,7,6,5,4,3,2,1];

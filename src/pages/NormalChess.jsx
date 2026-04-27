@@ -30,16 +30,42 @@ export default function NormalChess({ timerMode, onBack }) {
   const [timerRunning, setTimerRunning] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
 
-  const stockfishRef = useRef(null);
   const timerRef = useRef(null);
   const gameRef = useRef(game);
   gameRef.current = game;
 
   // Init Stockfish
-  useEffect(() => {
-    if (!selectedBot) return;
-    try {
-      const sf = new Worker('https://cdn.jsdelivr.net/npm/stockfish@16.0.0/src/stockfish.js');
+// Simple bot AI fallback
+const getSimpleBotMove = useCallback((g, depth) => {
+  const moves = g.moves({ verbose: true });
+  if (!moves.length) return null;
+
+  // Try captures first
+  const captures = moves.filter(m => m.captured);
+  if (captures.length && depth < 6) {
+    return captures[Math.floor(Math.random() * captures.length)];
+  }
+
+  // Score moves simply
+  const pieceValues = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
+  let bestMove = moves[0];
+  let bestScore = -Infinity;
+
+  for (const move of moves) {
+    let score = 0;
+    if (move.captured) score += pieceValues[move.captured] * 10;
+    if (move.piece === 'p' && (move.to[1] === '7' || move.to[1] === '2')) score += 5;
+    if (['d4','d5','e4','e5','c4','c5'].includes(move.to)) score += 2;
+    score += (Math.random() * depth);
+    if (score > bestScore) { bestScore = score; bestMove = move; }
+  }
+  return bestMove;
+}, []);
+
+useEffect(() => {
+  if (!selectedBot) return;
+  playGameStartSound();
+}, [selectedBot]);
       sf.postMessage('uci');
       sf.postMessage('ucinewgame');
       sf.onmessage = (e) => {
@@ -124,12 +150,16 @@ export default function NormalChess({ timerMode, onBack }) {
   }, [updateCheckSquare]);
 
   const triggerStockfish = useCallback((fen, depth) => {
-    if (!stockfishRef.current) return;
-    setIsThinking(true);
-    stockfishRef.current.postMessage(`position fen ${fen}`);
-    stockfishRef.current.postMessage(`go depth ${depth} movetime 2000`);
-  }, []);
-
+  setIsThinking(true);
+  setTimeout(() => {
+    const tempGame = new Chess(fen);
+    const move = getSimpleBotMove(tempGame, depth);
+    if (move) {
+      applyBotMove(move.from, move.to, move.promotion);
+    }
+    setIsThinking(false);
+  }, 500 + Math.random() * 1000);
+}, [getSimpleBotMove, applyBotMove]);
   const handleSquareClick = useCallback((square) => {
     if (gameOver || isThinking) return;
     if (!timerRunning && history.length === 0) setTimerRunning(true);

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 
 const PIECE_IMAGES = {
   wk: 'https://www.chess.com/chess-themes/pieces/neo/150/wk.png',
@@ -19,189 +19,163 @@ const FILES = ['a','b','c','d','e','f','g','h'];
 const RANKS = [8,7,6,5,4,3,2,1];
 
 export default function ChessBoard({
-  game, selectedSquare, legalMoves = [], lastMove,
-  onSquareClick, checkSquare,
-  phoenixSquares, phoenixMoves = [], phoenixSelected, activePhoenixColor
+  game,
+  selectedSquare,
+  legalMoves = [],
+  lastMove,
+  onSquareClick,
+  checkSquare,
+
+  // Phoenix / advanced props
+  phoenixSquares,
+  phoenixMoves = [],
+  evalScore = 0
 }) {
+
   const board = game.board();
 
+  /* memo prevents unnecessary recalculation */
+  const memoBoard = useMemo(() => board, [game]);
+
   return (
-    <div className="relative inline-block">
-      {/* Rank labels */}
+    <div className="relative inline-block select-none">
+
+      {/* ♟️ Eval Bar */}
+      <div className="absolute right-0 top-0 w-2 h-full bg-gray-900 z-10">
+        <div
+          className="w-full bg-white"
+          style={{
+            height: `${50 + Math.max(-50, Math.min(50, evalScore))}%`,
+            transition: 'height 0.2s ease'
+          }}
+        />
+      </div>
+
+      {/* Board */}
       <div className="flex">
+
+        {/* Rank labels */}
         <div className="flex flex-col" style={{ width: '18px' }}>
           {RANKS.map(rank => (
-            <div key={rank} style={{ width: '18px', height: '44px' }}
-              className="flex items-center justify-center text-xs font-bold text-amber-900 opacity-70">
+            <div
+              key={rank}
+              style={{ width: '18px', height: '44px' }}
+              className="flex items-center justify-center text-xs font-bold opacity-70"
+            >
               {rank}
             </div>
           ))}
         </div>
 
+        {/* Chess grid */}
         <div>
-          {/* Board */}
+
           {RANKS.map((rank, ri) => (
             <div key={rank} className="flex">
+
               {FILES.map((file, fi) => {
+
                 const square = file + rank;
-                const piece = board[ri][fi];
+                const piece = memoBoard[ri][fi];
+
                 const isLight = (ri + fi) % 2 === 0;
                 const isSelected = selectedSquare === square;
                 const isLegal = legalMoves.includes(square);
-                const isLastMove = lastMove && (lastMove.from === square || lastMove.to === square);
+                const isLastMove =
+                  lastMove?.from === square || lastMove?.to === square;
+
                 const isCheck = checkSquare === square;
                 const isPhoenixMove = phoenixMoves.includes(square);
-                const hasWhitePhoenix = phoenixSquares?.w === square;
-                const hasBlackPhoenix = phoenixSquares?.b === square;
 
-                let bgColor = isLight ? '#f0d9b5' : '#b58863';
-                if (isLastMove) bgColor = isLight ? '#cdd16f' : '#aaa23a';
-                if (isSelected) bgColor = '#f6f669';
-                if (isCheck) bgColor = '#ff6b6b';
+                const hasPhoenix =
+                  phoenixSquares?.w === square ||
+                  phoenixSquares?.b === square;
+
+                /* base color */
+                let bg = isLight ? '#f0d9b5' : '#b58863';
+
+                if (isLastMove) bg = '#cdd16f';
+                if (isSelected) bg = '#f6f669';
+                if (isCheck) bg = '#ff6b6b';
 
                 return (
                   <div
                     key={square}
                     onClick={() => onSquareClick(square)}
+                    className="relative flex items-center justify-center"
                     style={{
                       width: '44px',
                       height: '44px',
-                      backgroundColor: bgColor,
-                      position: 'relative',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
+                      backgroundColor: bg,
                       cursor: 'pointer',
                     }}
                   >
-                    {/* Legal move dot */}
+
+                    {/* legal move dot */}
                     {isLegal && !piece && (
-                      <div style={{
-                        position: 'absolute',
-                        width: '14px',
-                        height: '14px',
-                        borderRadius: '50%',
-                        backgroundColor: 'rgba(0,0,0,0.2)',
-                        zIndex: 10,
-                      }} />
+                      <div className="absolute w-3 h-3 bg-black opacity-25 rounded-full" />
                     )}
 
-                    {/* Legal capture ring */}
+                    {/* capture highlight */}
                     {isLegal && piece && (
-                      <div style={{
-                        position: 'absolute',
-                        inset: 0,
-                        border: '4px solid rgba(0,0,0,0.3)',
-                        zIndex: 10,
-                      }} />
+                      <div className="absolute inset-0 border-4 border-black opacity-30" />
                     )}
 
-                    {/* Phoenix move highlight */}
+                    {/* phoenix hint */}
                     {isPhoenixMove && (
-                      <div style={{
-                        position: 'absolute',
-                        inset: 0,
-                        backgroundColor: 'rgba(255,165,0,0.35)',
-                        border: '3px solid orange',
-                        zIndex: 10,
-                      }} />
+                      <div className="absolute inset-0 bg-orange-400/30 border border-orange-500" />
                     )}
 
-                    {/* Chess piece */}
+                    {/* PIECE */}
                     {piece && (
-                      <div style={{ position: 'relative', zIndex: 20 }}>
-                        {/* Phoenix aura glow around king */}
-                        {((hasWhitePhoenix && piece.color === 'w') ||
-                          (hasBlackPhoenix && piece.color === 'b')) && (
-                          <div style={{
-                            position: 'absolute',
-                            inset: '-6px',
-                            borderRadius: '50%',
-                            border: piece.color === 'w'
-                              ? '3px solid rgba(100,180,255,0.9)'
-                              : '3px solid rgba(255,80,80,0.9)',
-                            boxShadow: piece.color === 'w'
-                              ? '0 0 10px 4px rgba(100,180,255,0.6)'
-                              : '0 0 10px 4px rgba(255,80,80,0.6)',
-                            animation: 'phoenixPulse 1.5s ease-in-out infinite',
-                            zIndex: 25,
-                          }} />
+                      <div className="relative z-20">
+
+                        {/* Phoenix aura */}
+                        {hasPhoenix && (
+                          <div className="absolute -inset-1 rounded-full border-2 border-blue-400 animate-pulse" />
                         )}
+
                         <img
-  src={PIECE_IMAGES[piece.color + piece.type]}
-  alt={piece.color + piece.type}
-  style={{
-    width: '38px',
-    height: '38px',
-    userSelect: 'none',
-    pointerEvents: 'none',
-    display: 'block',
-  }}
-/>
+                          src={PIECE_IMAGES[piece.color + piece.type]}
+                          alt={piece.type}
+                          className="w-9 h-9 pointer-events-none select-none"
+                        />
                       </div>
                     )}
 
-                    {/* Phoenix on empty square (after moving away from king) */}
-                    {(hasWhitePhoenix || hasBlackPhoenix) && !piece && (
-                      <div style={{
-                        position: 'absolute',
-                        inset: '4px',
-                        borderRadius: '50%',
-                        border: hasWhitePhoenix
-                          ? '3px solid rgba(100,180,255,0.9)'
-                          : '3px solid rgba(255,80,80,0.9)',
-                        boxShadow: hasWhitePhoenix
-                          ? '0 0 12px 5px rgba(100,180,255,0.5)'
-                          : '0 0 12px 5px rgba(255,80,80,0.5)',
-                        animation: 'phoenixPulse 1.5s ease-in-out infinite',
-                        zIndex: 15,
-                      }} />
-                    )}
-
-                    {/* Rank number */}
+                    {/* file/rank labels */}
                     {fi === 0 && (
-                      <span style={{
-                        position: 'absolute', top: '1px', left: '2px',
-                        fontSize: '9px', fontWeight: 'bold', opacity: 0.7,
-                        color: isLight ? '#b58863' : '#f0d9b5',
-                        zIndex: 5,
-                      }}>{rank}</span>
+                      <span className="absolute top-0 left-1 text-[9px] opacity-60">
+                        {rank}
+                      </span>
                     )}
 
-                    {/* File letter */}
                     {ri === 7 && (
-                      <span style={{
-                        position: 'absolute', bottom: '1px', right: '2px',
-                        fontSize: '9px', fontWeight: 'bold', opacity: 0.7,
-                        color: isLight ? '#b58863' : '#f0d9b5',
-                        zIndex: 5,
-                      }}>{file}</span>
+                      <span className="absolute bottom-0 right-1 text-[9px] opacity-60">
+                        {file}
+                      </span>
                     )}
+
                   </div>
                 );
               })}
             </div>
           ))}
 
-          {/* File labels bottom */}
-          <div className="flex" style={{ height: '18px' }}>
+          {/* bottom files */}
+          <div className="flex h-[18px]">
             {FILES.map(file => (
-              <div key={file} style={{ width: '44px' }}
-                className="flex items-center justify-center text-xs font-bold text-amber-900 opacity-70">
+              <div
+                key={file}
+                className="w-[44px] text-center text-xs font-bold opacity-70"
+              >
                 {file}
               </div>
             ))}
           </div>
+
         </div>
       </div>
-
-      {/* Phoenix pulse animation */}
-      <style>{`
-        @keyframes phoenixPulse {
-          0%, 100% { opacity: 1; transform: scale(1); }
-          50% { opacity: 0.6; transform: scale(1.08); }
-        }
-      `}</style>
     </div>
   );
-        }
+      }

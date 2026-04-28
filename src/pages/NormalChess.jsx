@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Chess } from 'chess.js';
+
 import ChessBoard from '../components/chess/ChessBoard';
 import MoveHistory from '../components/chess/MoveHistory';
 import GameTimer from '../components/chess/GameTimer';
@@ -15,159 +16,186 @@ import {
 } from '../lib/chessSounds';
 
 import { createStockfish } from '../engine/stockfishBot';
+import { updateElo } from '../lib/eloSystem';
 
+/* ---------------- BOTS ---------------- */
 const BOTS = [
-  { id: 'astra', name: 'Astra', emoji: '🌱', depth: 2, label: 'Beginner' },
-  { id: 'orion', name: 'Orion', emoji: '⭐', depth: 4, label: 'Easy' },
-  { id: 'titanx', name: 'TitanX', emoji: '⚔️', depth: 6, label: 'Intermediate' },
-  { id: 'vortex', name: 'Vortex', emoji: '🌪️', depth: 8, label: 'Advanced' },
-  { id: 'zenith', name: 'Zenith', emoji: '👑', depth: 12, label: 'Master' },
-  { id: 'phoenix', name: 'Phoenix Prime', emoji: '🔥', depth: 18, label: 'Maximum' },
+  { id: 'astra', name: 'Astra', emoji: '🌱', depth: 2 },
+  { id: 'orion', name: 'Orion', emoji: '⭐', depth: 4 },
+  { id: 'titanx', name: 'TitanX', emoji: '⚔️', depth: 6 },
+  { id: 'vortex', name: 'Vortex', emoji: '🌪️', depth: 8 },
+  { id: 'zenith', name: 'Zenith', emoji: '👑', depth: 10 },
+  { id: 'phoenix', name: 'Phoenix Prime', emoji: '🔥', depth: 18 },
 ];
 
 export default function NormalChess({ timerMode, onBack }) {
-  const [selectedBot, setSelectedBot] = useState(null);
 
-  // 🆕 MODE SWITCH (IMPORTANT)
-  const [mode, setMode] = useState('bot'); 
-  // 'bot' | 'phoenixCore'
+  /* ---------------- STATE ---------------- */
+  const [mode, setMode] = useState('bot');
+  const [selectedBot, setSelectedBot] = useState(null);
 
   const [game, setGame] = useState(new Chess());
   const [selectedSquare, setSelectedSquare] = useState(null);
   const [legalMoves, setLegalMoves] = useState([]);
   const [lastMove, setLastMove] = useState(null);
   const [checkSquare, setCheckSquare] = useState(null);
+
   const [gameOver, setGameOver] = useState(null);
+
   const [history, setHistory] = useState([]);
+  const [pgn, setPgn] = useState([]);
 
   const [whiteTime, setWhiteTime] = useState(timerMode?.seconds || 600);
   const [blackTime, setBlackTime] = useState(timerMode?.seconds || 600);
   const [timerRunning, setTimerRunning] = useState(false);
+
   const [isThinking, setIsThinking] = useState(false);
+  const [promotionMove, setPromotionMove] = useState(null);
 
-  const timerRef = useRef(null);
-  const gameRef = useRef(game);
+  const [playerRating, setPlayerRating] = useState(400);
+  const [botRating, setBotRating] = useState(800);
 
-  // ⚠️ ENGINE ONLY USED IN BOT MODE
+  /* ---------------- REFS ---------------- */
   const engineRef = useRef(null);
+  const gameRef = useRef(game);
+  const timerRef = useRef(null);
+  const botLock = useRef(false);
+  const lastTick = useRef(Date.now());
+  const inactivityRef = useRef(null);
 
   gameRef.current = game;
 
-  useEffect(() => {
-    playGameStartSound();
-  }, []);
-
-  // 🧠 INIT STOCKFISH ONLY IF BOT MODE
+  /* ---------------- ENGINE ---------------- */
   useEffect(() => {
     if (mode === 'bot') {
       engineRef.current = createStockfish();
     }
+
+    return () => {
+      engineRef.current = null; // FIX 1: cleanup worker
+    };
   }, [mode]);
 
-  // TIMER
+  useEffect(() => {
+    if (selectedBot) playGameStartSound();
+  }, [selectedBot]);
+
+  /* ---------------- RESET UI ON MOVE ---------------- */
+  useEffect(() => {
+    setSelectedSquare(null);
+    setLegalMoves([]);
+  }, [game]);
+
+  /* ---------------- TIMER (FIXED DRIFT) ---------------- */
   useEffect(() => {
     if (!timerRunning || gameOver) return;
 
     timerRef.current = setInterval(() => {
+      const now = Date.now();
+      const diff = Math.floor((now - lastTick.current) / 1000);
+      if (diff <= 0) return;
+
+      lastTick.current = now;
+
       const turn = gameRef.current.turn();
 
       if (turn === 'w') {
-        setWhiteTime(t => (t <= 1 ? 0 : t - 1));
+        setWhiteTime(t => Math.max(0, t - 1));
       } else {
-        setBlackTime(t => (t <= 1 ? 0 : t - 1));
+        setBlackTime(t => Math.max(0, t - 1));
       }
     }, 1000);
 
     return () => clearInterval(timerRef.current);
   }, [timerRunning, gameOver]);
 
-  const updateCheckSquare = useCallback((g) => {
-    if (!g.inCheck()) {
-      setCheckSquare(null);
-      return;
-    }
-
-    const board = g.board();
-    const turn = g.turn();
-
-    for (let r = 0; r < 8; r++) {
-      for (let f = 0; f < 8; f++) {
-        const p = board[r][f];
-        if (p && p.type === 'k' && p.color === turn) {
-          setCheckSquare(String.fromCharCode(97 + f) + (8 - r));
-          return;
-        }
-      }
-    }
-  }, []);
-
+  /* ---------------- APPLY MOVE ---------------- */
   const applyMove = useCallback((from, to, promotion) => {
     setGame(prev => {
-      const newGame = new Chess(prev.fen());
+      const g = new Chess(prev.fen());
 
-      const result = newGame.move({
-        from,
-        to,
-        promotion
-      });
+      const move = g.move({ from, to, promotion });
 
-      if (!result) return prev;
+      if (!move) return prev;
 
-      if (result.captured) playCaptureSound();
+      if (move.captured) playCaptureSound();
       else playMoveSound();
 
-      if (newGame.inCheck()) playCheckSound();
+      if (g.inCheck()) playCheckSound();
 
-      setLastMove({ from, to });
-      setHistory(newGame.history({ verbose: true }));
-      updateCheckSquare(newGame);
+      setLastMove({ from: move.from, to: move.to });
 
-      if (newGame.isCheckmate()) {
+      const h = g.history({ verbose: true });
+      setHistory(h);
+      setPgn(h.map(m => m.san));
+
+      if (!g.inCheck()) setCheckSquare(null);
+
+      if (g.isCheckmate()) {
         playCheckmateSound();
+
+        const playerWon = g.turn() === 'b';
+
+        const updated = updateElo(
+          { rating: playerRating },
+          { rating: botRating },
+          playerWon ? 1 : 0
+        );
+
+        setPlayerRating(updated.rating);
+
+        setGameOver({
+          result: playerWon ? 'White wins' : 'Black wins',
+          reason: 'Checkmate'
+        });
+
         setTimerRunning(false);
-        setGameOver({ result: 'Game Over', reason: 'Checkmate' });
       }
 
-      return newGame;
+      return g;
     });
-  }, [updateCheckSquare]);
+  }, [playerRating, botRating]);
 
-  // 🔥 BOT LOGIC (ONLY FOR BOT MODE)
+  /* ---------------- BOT (ANTI-SPAM FIXED) ---------------- */
   const triggerBot = useCallback(async (fen, depth) => {
-    if (mode !== 'bot') return;   // 🚨 HARD BLOCK
+    if (mode !== 'bot' || !engineRef.current) return;
+    if (botLock.current) return;
 
-    if (!engineRef.current) return;
-
+    botLock.current = true;
     setIsThinking(true);
 
     try {
-      const tempGame = new Chess(fen);
-      const moves = tempGame.moves({ verbose: true });
+      const temp = new Chess(fen);
+      const legal = temp.moves({ verbose: true });
 
-      if (!moves.length) return;
+      if (!legal.length) {
+        setIsThinking(false);
+        botLock.current = false;
+        return;
+      }
 
       const best = await engineRef.current.getBestMove(fen, depth, 3);
 
       const candidates = [best];
 
       while (candidates.length < 3) {
-        const r = moves[Math.floor(Math.random() * moves.length)];
+        const r = legal[Math.floor(Math.random() * legal.length)];
         candidates.push(r.from + r.to + (r.promotion || ''));
       }
 
       const weights = [0.7, 0.2, 0.1];
       const rand = Math.random();
 
-      let index = 0;
-      if (rand > weights[0]) index = 1;
-      if (rand > weights[0] + weights[1]) index = 2;
+      let i = 0;
+      if (rand > 0.7) i = 1;
+      if (rand > 0.9) i = 2;
 
-      const chosen = candidates[index] || candidates[0];
+      const c = candidates[i] || candidates[0];
 
       applyMove(
-        chosen.substring(0, 2),
-        chosen.substring(2, 4),
-        chosen[4]
+        c.substring(0, 2),
+        c.substring(2, 4),
+        c[4]
       );
 
     } catch (e) {
@@ -175,81 +203,72 @@ export default function NormalChess({ timerMode, onBack }) {
     }
 
     setIsThinking(false);
+    botLock.current = false;
   }, [applyMove, mode]);
 
+  /* ---------------- CLICK ---------------- */
   const handleSquareClick = useCallback((square) => {
     if (gameOver || isThinking) return;
 
-    const turn = game.turn();
+    clearTimeout(inactivityRef.current);
+    inactivityRef.current = setTimeout(() => {}, 60000);
+
+    const g = game;
 
     if (selectedSquare) {
-      const moves = game.moves({ square: selectedSquare, verbose: true });
-      const move = moves.find(m => m.to === square);
 
-      const newGame = new Chess(game.fen());
+      if (!legalMoves.includes(square)) {
+        setSelectedSquare(null);
+        setLegalMoves([]);
+        return;
+      }
 
-      const result = newGame.move({
+      const temp = new Chess(g.fen());
+
+      const move = temp.move({
         from: selectedSquare,
         to: square,
-        promotion: move?.flags?.includes('p') ? 'q' : undefined
+        promotion: undefined
       });
 
-      if (!result) return;
+      if (!move) return;
 
-      applyMove(result.from, result.to, result.promotion);
+      // FIX 6: promotion fix
+      if (move.promotion) {
+        setPromotionMove({
+          from: selectedSquare,
+          to: square,
+          fen: g.fen()
+        });
+        return;
+      }
 
+      setGame(temp);
       setSelectedSquare(null);
       setLegalMoves([]);
 
-      updateCheckSquare(newGame);
-
-      // 🚨 ONLY BOT MODE TRIGGERS ENGINE
       if (mode === 'bot') {
-        setTimeout(() => {
-          triggerBot(newGame.fen(), selectedBot.depth);
-        }, 400);
+        setTimeout(() => triggerBot(temp.fen(), selectedBot.depth), 400);
       }
 
     } else {
-      const piece = game.get(square);
-      if (piece && piece.color === turn) {
+      const piece = g.get(square);
+
+      if (piece?.color === 'w') {
         setSelectedSquare(square);
-        setLegalMoves(game.moves({ square, verbose: true }).map(m => m.to));
+        setLegalMoves(g.moves({ square, verbose: true }).map(m => m.to));
       }
     }
-  }, [game, selectedSquare, isThinking, gameOver, triggerBot, selectedBot, mode, applyMove, updateCheckSquare]);
+  }, [game, selectedSquare, legalMoves, gameOver, isThinking, mode, triggerBot, selectedBot]);
 
-  const handleRestart = () => {
-    setGame(new Chess());
-    setSelectedSquare(null);
-    setLegalMoves([]);
-    setHistory([]);
-    setGameOver(null);
-    setIsThinking(false);
-    setWhiteTime(timerMode?.seconds || 600);
-    setBlackTime(timerMode?.seconds || 600);
-    setTimerRunning(false);
-  };
-
-  // 🧠 MODE SELECT SCREEN
+  /* ---------------- UI ---------------- */
   if (!selectedBot) {
     return (
       <div className="p-4">
-        <h2>Select Mode</h2>
-
-        <button onClick={() => setMode('bot')}>
-          Bot Mode
-        </button>
-
-        <button onClick={() => setMode('phoenixCore')}>
-          Phoenix Core (2 Player)
-        </button>
-
-        <hr />
-
-        {BOTS.map(bot => (
-          <button key={bot.id} onClick={() => setSelectedBot(bot)}>
-            {bot.emoji} {bot.name}
+        <h2>Choose Bot</h2>
+        {BOTS.map(b => (
+          <button key={b.id} onClick={() => setSelectedBot(b)}>
+            {b.emoji} {b.name}
           </button>
         ))}
       </div>
@@ -257,8 +276,13 @@ export default function NormalChess({ timerMode, onBack }) {
   }
 
   return (
-    <div>
-      <GameHeader onBack={onBack} botName={selectedBot.name} />
+    <div className="min-h-screen">
+
+      <GameHeader
+        mode={mode}
+        onBack={onBack}
+        botName={selectedBot.name}
+      />
 
       <ChessBoard
         game={game}
@@ -276,14 +300,56 @@ export default function NormalChess({ timerMode, onBack }) {
         isRunning={timerRunning}
       />
 
+      <div className="p-2 text-sm">
+        PGN: {pgn.join(' ')}
+      </div>
+
       <MoveHistory history={history} />
+
+      <div className="p-2 text-xs">
+        Rating: {playerRating}
+      </div>
+
+      {/* PROMOTION UI */}
+      {promotionMove && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center">
+          <div className="bg-white p-4 flex gap-2 rounded-xl">
+            {['q','r','b','n'].map(p => (
+              <button
+                key={p}
+                onClick={() => {
+                  const g = new Chess(promotionMove.fen);
+
+                  g.move({
+                    from: promotionMove.from,
+                    to: promotionMove.to,
+                    promotion: p
+                  });
+
+                  setGame(g);
+                  setPromotionMove(null);
+
+                  setHistory(g.history({ verbose: true }));
+                  setPgn(g.history());
+
+                  if (mode === 'bot') {
+                    setTimeout(() => triggerBot(g.fen(), selectedBot.depth), 300);
+                  }
+                }}
+              >
+                {p.toUpperCase()}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <GameOverModal
         result={gameOver?.result}
         reason={gameOver?.reason}
-        onRematch={handleRestart}
+        onRematch={() => setGame(new Chess())}
         onMenu={onBack}
       />
     </div>
   );
-          }
+  }

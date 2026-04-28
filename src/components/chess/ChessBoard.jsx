@@ -79,13 +79,19 @@ export default function ChessBoard({
                   <div className="absolute top-0 left-0 text-xs z-20">🔴</div>
                 )}
                 {piece && (
-                  <span className={`text-2xl z-10 select-none leading-none ${
-                    piece.color === 'w' ? 'drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]' : ''
-                  }`}
-                    style={{ fontSize: 'min(6vw, 30px)' }}>
-                    {PIECES[piece.color + piece.type]}
-                  </span>
-                )}
+  <span
+    className="text-2xl z-10 select-none leading-none"
+    style={{
+      fontSize: 'min(6vw, 30px)',
+      color: piece.color === 'w' ? '#ffffff' : '#1a1a1a',
+      WebkitTextStroke: piece.color === 'w' ? '1.5px #333333' : '1.5px #ffffff',
+      filter: piece.color === 'w'
+        ? 'drop-shadow(0 1px 3px rgba(0,0,0,0.9))'
+        : 'drop-shadow(0 1px 3px rgba(255,255,255,0.4))',
+    }}>
+    {PIECES[piece.color + piece.type]}
+  </span>
+)}
                 {fi === 0 && (
                   <span className="absolute top-0.5 left-0.5 text-xs opacity-50 leading-none"
                     style={{ fontSize: '8px' }}>{rank}</span>

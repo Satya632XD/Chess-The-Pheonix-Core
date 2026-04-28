@@ -45,8 +45,7 @@ export default function NormalChess({ timerMode, onBack }) {
   gameRef.current = game;
 
   useEffect(() => {
-    if (!selectedBot) return;
-    playGameStartSound();
+    if (selectedBot) playGameStartSound();
   }, [selectedBot]);
 
   useEffect(() => {
@@ -61,15 +60,9 @@ export default function NormalChess({ timerMode, onBack }) {
       const turn = gameRef.current.turn();
 
       if (turn === 'w') {
-        setWhiteTime(t => {
-          if (t <= 1) return endByTimeout('w');
-          return t - 1;
-        });
+        setWhiteTime(t => (t <= 1 ? endByTimeout('w') : t - 1));
       } else {
-        setBlackTime(t => {
-          if (t <= 1) return endByTimeout('b');
-          return t - 1;
-        });
+        setBlackTime(t => (t <= 1 ? endByTimeout('b') : t - 1));
       }
     }, 1000);
 
@@ -86,20 +79,20 @@ export default function NormalChess({ timerMode, onBack }) {
   };
 
   const updateCheckSquare = useCallback((g) => {
-    if (g.inCheck()) {
-      const board = g.board();
-      const turn = g.turn();
+    if (!g.inCheck()) return setCheckSquare(null);
 
-      for (let r = 0; r < 8; r++) {
-        for (let f = 0; f < 8; f++) {
-          const p = board[r][f];
-          if (p && p.type === 'k' && p.color === turn) {
-            setCheckSquare(String.fromCharCode(97 + f) + (8 - r));
-            return;
-          }
+    const board = g.board();
+    const turn = g.turn();
+
+    for (let r = 0; r < 8; r++) {
+      for (let f = 0; f < 8; f++) {
+        const p = board[r][f];
+        if (p?.type === 'k' && p.color === turn) {
+          setCheckSquare(String.fromCharCode(97 + f) + (8 - r));
+          return;
         }
       }
-    } else setCheckSquare(null);
+    }
   }, []);
 
   const applyBotMove = useCallback((from, to, promotion) => {
@@ -114,8 +107,7 @@ export default function NormalChess({ timerMode, onBack }) {
 
       if (!result) return prev;
 
-      if (result.captured) playCaptureSound();
-      else playMoveSound();
+      result.captured ? playCaptureSound() : playMoveSound();
 
       if (newGame.inCheck() && !newGame.isCheckmate()) playCheckSound();
 
@@ -136,7 +128,7 @@ export default function NormalChess({ timerMode, onBack }) {
     });
   }, [updateCheckSquare]);
 
-  // 🔥 PHOENIX PRIME / ZENITH BOT ENGINE
+  // 🔥 FIXED PHOENIX BOT (CLEAN + STABLE)
   const triggerBot = useCallback(async (fen, depth) => {
     if (!engineRef.current) return;
 
@@ -151,28 +143,24 @@ export default function NormalChess({ timerMode, onBack }) {
         return;
       }
 
+      // 🧠 1 strong engine move
+      const best = await engineRef.current.getBestMove(fen, depth, 3);
+
       const candidates = [];
 
-      // Get top moves (engine + fallback mix)
-      for (let i = 0; i < 3; i++) {
-        try {
-          const move = await engineRef.current.getBestMove(fen, depth, 3);
-          if (move) candidates.push(move);
-        } catch {}
-      }
+      if (best) candidates.push(best);
 
-      // fallback if engine weak / fails
-      while (candidates.length < 3 && legalMoves.length > 0) {
+      // ♟️ 2 human fallback moves
+      while (candidates.length < 3) {
         const rand = legalMoves[Math.floor(Math.random() * legalMoves.length)];
         candidates.push(rand.from + rand.to + (rand.promotion || ''));
       }
 
-      // 🎯 Human-like weighting
-      const weights = [0.65, 0.25, 0.10];
+      // 🎯 weighted randomness (Phoenix behavior)
       const r = Math.random();
 
       let index = 0;
-      if (r > 0.65) index = 1;
+      if (r > 0.70) index = 1;
       if (r > 0.90) index = 2;
 
       const chosen = candidates[index] || candidates[0];
@@ -212,8 +200,7 @@ export default function NormalChess({ timerMode, onBack }) {
 
         if (!result) return;
 
-        if (result.captured) playCaptureSound();
-        else playMoveSound();
+        result.captured ? playCaptureSound() : playMoveSound();
 
         if (newGame.inCheck() && !newGame.isCheckmate()) playCheckSound();
 
@@ -240,7 +227,7 @@ export default function NormalChess({ timerMode, onBack }) {
 
     } else {
       const piece = game.get(square);
-      if (piece && piece.color === turn) {
+      if (piece?.color === turn) {
         setSelectedSquare(square);
         setLegalMoves(game.moves({ square, verbose: true }).map(m => m.to));
       }
@@ -259,9 +246,7 @@ export default function NormalChess({ timerMode, onBack }) {
   ]);
 
   const handleRestart = () => {
-    const newGame = new Chess();
-
-    setGame(newGame);
+    setGame(new Chess());
     setSelectedSquare(null);
     setLegalMoves([]);
     setLastMove(null);
@@ -293,22 +278,17 @@ export default function NormalChess({ timerMode, onBack }) {
 
   if (!selectedBot) {
     return (
-      <div className="min-h-screen bg-background flex flex-col font-inter">
-        <div className="flex items-center px-4 py-3 border-b border-border">
+      <div className="min-h-screen bg-background flex flex-col">
+        <div className="p-4 border-b">
           <button onClick={onBack}>← Menu</button>
-          <h2 className="flex-1 text-center font-bold">Choose Opponent</h2>
+          <h2 className="text-center font-bold">Choose Opponent</h2>
         </div>
 
-        <div className="flex-1 p-4 space-y-3 overflow-y-auto">
+        <div className="p-4 space-y-3">
           {BOTS.map(bot => (
-            <button
-              key={bot.id}
-              onClick={() => setSelectedBot(bot)}
-              className="w-full p-4 border rounded-xl text-left"
-            >
-              <div className="text-xl">{bot.emoji} {bot.name}</div>
-              <div className="text-sm opacity-70">{bot.label}</div>
-              <div className="text-xs italic">{bot.personality}</div>
+            <button key={bot.id} onClick={() => setSelectedBot(bot)} className="w-full p-4 border rounded-xl">
+              <div>{bot.emoji} {bot.name}</div>
+              <div>{bot.label}</div>
             </button>
           ))}
         </div>
@@ -317,7 +297,7 @@ export default function NormalChess({ timerMode, onBack }) {
   }
 
   return (
-    <div className="min-h-screen bg-background flex flex-col font-inter">
+    <div className="min-h-screen bg-background flex flex-col">
       <GameHeader
         mode="normal"
         onBack={onBack}
@@ -335,7 +315,7 @@ export default function NormalChess({ timerMode, onBack }) {
           checkSquare={checkSquare}
         />
 
-        <div className="w-full max-w-xs space-y-3">
+        <div className="w-full max-w-xs">
           <GameTimer
             whiteTime={whiteTime}
             blackTime={blackTime}
@@ -358,4 +338,4 @@ export default function NormalChess({ timerMode, onBack }) {
       />
     </div>
   );
-}
+            }

@@ -1,11 +1,17 @@
 import React, { useState } from 'react';
 
 export const TIMER_MODES = [
-  { id: 1, label: '⏱ 10 Minutes', seconds: 600 },
-  { id: 2, label: '⚡ 1 Minute', seconds: 60 },
-  { id: 3, label: '🕓 4 Minutes', seconds: 240 },
-  { id: 4, label: '⏱ 2:30 Minutes', seconds: 150 },
-  { id: 5, label: '▲ 30 Minutes', seconds: 1800 },
+  { id: 1,  label: '⚡ 1 min',       seconds: 60,   increment: 0  },
+  { id: 2,  label: '⚡ 2 min',       seconds: 120,  increment: 0  },
+  { id: 3,  label: '⚡ 2+3',         seconds: 120,  increment: 3  },
+  { id: 4,  label: '🔥 3 min',       seconds: 180,  increment: 0  },
+  { id: 5,  label: '🔥 3+2',         seconds: 180,  increment: 2  },
+  { id: 6,  label: '🔥 5 min',       seconds: 300,  increment: 0  },
+  { id: 7,  label: '🔥 5+5',         seconds: 300,  increment: 5  },
+  { id: 8,  label: '⏱ 10 min',      seconds: 600,  increment: 0  },
+  { id: 9,  label: '⏱ 10+5',        seconds: 600,  increment: 5  },
+  { id: 10, label: '⏱ 15+5',        seconds: 900,  increment: 5  },
+  { id: 11, label: '▲ 30 min',      seconds: 1800, increment: 0  },
 ];
 
 export default function MainMenu({ onPlayNormal, onPlayPhoenix, onPlayOnline }) {
@@ -100,9 +106,9 @@ export default function MainMenu({ onPlayNormal, onPlayPhoenix, onPlayOnline }) 
                 {mode.label}
               </span>
               <span className="font-mono text-xs text-muted-foreground">
-                {Math.floor(mode.seconds / 60)}:
-                {(mode.seconds % 60).toString().padStart(2, '0')}
-              </span>
+  {Math.floor(mode.seconds / 60)}:{(mode.seconds % 60).toString().padStart(2,'0')}
+  {mode.increment > 0 && `+${mode.increment}`}
+</span>
             </button>
           ))}
         </div>

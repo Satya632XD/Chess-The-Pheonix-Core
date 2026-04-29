@@ -483,3 +483,28 @@ export default function NormalChess({ timerMode, onBack }) {
           </div>
 
           <div className="flex gap-2">
+            <button onClick={handleResign}
+              className="flex-1 py-2 text-xs rounded-lg bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30 transition-colors font-medium">
+              🏳 Resign
+            </button>
+            <button onClick={handleDrawOffer}
+              className="flex-1 py-2 text-xs rounded-lg bg-secondary text-foreground hover:bg-secondary/80 transition-colors font-medium">
+              🤝 Draw
+            </button>
+          </div>
+
+          <div className="flex-1 min-h-0" style={{ height: '260px' }}>
+            <MoveHistory history={history} />
+          </div>
+        </div>
+      </div>
+
+      <GameOverModal
+        result={gameOver?.result}
+        reason={gameOver?.reason}
+        onRematch={handleRestart}
+        onMenu={onBack}
+      />
+    </div>
+  );
+}

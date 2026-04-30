@@ -13,37 +13,37 @@ const BOTS = [
   {
     id: 'astra', name: 'Astra', emoji: '🌱', label: 'Beginner',
     personality: 'Still learning…',
-    useStockfish: false, depth: 2, poolSize: 1,
-    inaccuracyChance: 0, blunderChance: 0, // uses simple random bot
+    useStockfish: false, depth: 1, poolSize: 1,
+    inaccuracyChance: 0, blunderChance: 0,
   },
   {
     id: 'orion', name: 'Orion', emoji: '⭐', label: 'Easy',
     personality: "Let's play!",
-    useStockfish: true, depth: 4, poolSize: 10,
-    inaccuracyChance: 0.35, blunderChance: 0.10,
+    useStockfish: true, depth: 3, poolSize: 1,
+    inaccuracyChance: 0.30, blunderChance: 0.12,
   },
   {
     id: 'titanx', name: 'TitanX', emoji: '⚔️', label: 'Intermediate',
     personality: 'Stay sharp.',
-    useStockfish: true, depth: 8, poolSize: 8,
-    inaccuracyChance: 0.15, blunderChance: 0.025,
+    useStockfish: true, depth: 6, poolSize: 1,
+    inaccuracyChance: 0.12, blunderChance: 0.02,
   },
   {
     id: 'vortex', name: 'Vortex', emoji: '🌪️', label: 'Advanced',
     personality: 'I see everything.',
-    useStockfish: true, depth: 12, poolSize: 7,
+    useStockfish: true, depth: 10, poolSize: 7,
     inaccuracyChance: 0.08, blunderChance: 0,
   },
   {
     id: 'zenith', name: 'Zenith', emoji: '👑', label: 'Master',
     personality: 'You must be precise.',
-    useStockfish: true, depth: 16, poolSize: 6,
-    inaccuracyChance: 0.02, blunderChance: 0,
+    useStockfish: true, depth: 14, poolSize: 6,
+    inaccuracyChance: 0.01, blunderChance: 0,
   },
   {
     id: 'phoenix', name: 'Phoenix Prime', emoji: '🔥', label: 'Maximum',
     personality: 'This is your end.',
-    useStockfish: true, depth: 20, poolSize: 3,
+    useStockfish: true, depth: 18, poolSize: 3,
     inaccuracyChance: 0, blunderChance: 0,
   },
 ];

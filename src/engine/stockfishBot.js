@@ -1,157 +1,221 @@
-import { Chess } from 'chess.js';
+// =====================================
+// Phoenix Stockfish Bot (v11-lite)
+// Cluster-grade stability • Single engine • Safe MultiPV
+// =====================================
 
-const PV = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 20000 };
-const PST = {
-  p: [0,0,0,0,0,0,0,0,50,50,50,50,50,50,50,50,10,10,20,30,30,20,10,10,5,5,10,25,25,10,5,5,0,0,0,20,20,0,0,0,5,-5,-10,0,0,-10,-5,5,5,10,10,-20,-20,10,10,5,0,0,0,0,0,0,0,0],
-  n: [-50,-40,-30,-30,-30,-30,-40,-50,-40,-20,0,0,0,0,-20,-40,-30,0,10,15,15,10,0,-30,-30,5,15,20,20,15,5,-30,-30,0,15,20,20,15,0,-30,-30,5,10,15,15,10,5,-30,-40,-20,0,5,5,0,-20,-40,-50,-40,-30,-30,-30,-30,-40,-50],
-  b: [-20,-10,-10,-10,-10,-10,-10,-20,-10,0,0,0,0,0,0,-10,-10,0,5,10,10,5,0,-10,-10,5,5,10,10,5,5,-10,-10,0,10,10,10,10,0,-10,-10,10,10,10,10,10,10,-10,-10,5,0,0,0,0,5,-10,-20,-10,-10,-10,-10,-10,-10,-20],
-  r: [0,0,0,0,0,0,0,0,5,10,10,10,10,10,10,5,-5,0,0,0,0,0,0,-5,-5,0,0,0,0,0,0,-5,-5,0,0,0,0,0,0,-5,-5,0,0,0,0,0,0,-5,-5,0,0,0,0,0,0,-5,0,0,0,5,5,0,0,0],
-  q: [-20,-10,-10,-5,-5,-10,-10,-20,-10,0,0,0,0,0,0,-10,-10,0,5,5,5,5,0,-10,-5,0,5,5,5,5,0,-5,0,0,5,5,5,5,0,-5,-10,5,5,5,5,5,0,-10,-10,0,5,0,0,0,0,-10,-20,-10,-10,-5,-5,-10,-10,-20],
-  k: [-30,-40,-40,-50,-50,-40,-40,-30,-30,-40,-40,-50,-50,-40,-40,-30,-30,-40,-40,-50,-50,-40,-40,-30,-30,-40,-40,-50,-50,-40,-40,-30,-20,-30,-30,-40,-40,-30,-30,-20,-10,-20,-20,-20,-20,-20,-20,-10,20,20,0,0,0,0,20,20,20,30,10,0,0,10,30,20]
-};
+import { Chess } from "chess.js";
 
-function evalBoard(chess) {
-  if (chess.isCheckmate()) return chess.turn() === 'w' ? -99999 : 99999;
-  if (chess.isDraw()) return 0;
-  let score = 0;
-  const board = chess.board();
-  for (let r = 0; r < 8; r++)
-    for (let f = 0; f < 8; f++) {
-      const p = board[r][f];
-      if (!p) continue;
-      const idx = p.color === 'w' ? r*8+f : (7-r)*8+f;
-      const val = PV[p.type] + (PST[p.type]?.[idx] || 0);
-      score += p.color === 'w' ? val : -val;
-    }
-  return score;
-}
+// ================= CONFIG =================
+const MAX_PV = 5;
+const LOAD_TIMEOUT = 12000;
+const SEARCH_TIMEOUT = 9000;
 
-function orderMoves(moves) {
-  return [...moves].sort((a, b) => {
-    let sa = 0, sb = 0;
-    if (a.captured) sa += PV[a.captured]*10 - PV[a.piece];
-    if (b.captured) sb += PV[b.captured]*10 - PV[b.piece];
-    if (a.flags?.includes('p')) sa += 800;
-    if (b.flags?.includes('p')) sb += 800;
-    return sb - sa;
-  });
-}
+// ================= STATE =================
+let sf = null;
+let isReady = false;
+let failed = false;
 
-function alphabeta(chess, depth, alpha, beta, maximizing) {
-  if (depth === 0 || chess.isGameOver()) return evalBoard(chess);
-  const moves = orderMoves(chess.moves({ verbose: true }));
-  if (maximizing) {
-    let best = -Infinity;
-    for (const m of moves) {
-      chess.move(m); best = Math.max(best, alphabeta(chess, depth-1, alpha, beta, false)); chess.undo();
-      alpha = Math.max(alpha, best); if (beta <= alpha) break;
-    }
-    return best;
-  } else {
-    let best = Infinity;
-    for (const m of moves) {
-      chess.move(m); best = Math.min(best, alphabeta(chess, depth-1, alpha, beta, true)); chess.undo();
-      beta = Math.min(beta, best); if (beta <= alpha) break;
-    }
-    return best;
-  }
-}
-
-function minimaxMove(fen, depth, poolSize = 1) {
-  const chess = new Chess(fen);
-  const moves = chess.moves({ verbose: true });
-  if (!moves.length) return null;
-  const isMax = chess.turn() === 'w';
-  const scored = orderMoves(moves).map(m => {
-    chess.move(m);
-    const score = alphabeta(chess, Math.max(1, depth-1), -Infinity, Infinity, !isMax);
-    chess.undo();
-    return { m, score };
-  });
-  scored.sort((a, b) => isMax ? b.score - a.score : a.score - b.score);
-  const pool = scored.slice(0, Math.min(poolSize, scored.length));
-  const chosen = pool[Math.floor(Math.random() * pool.length)];
-  return chosen ? chosen.m.from + chosen.m.to + (chosen.m.promotion || '') : null;
-}
-
-// ── Worker (public/stockfish.js) ─────────────────────────────────────────
-let worker = null;
-let workerReady = false;
+let session = 0;
+let pending = null;
+let topMoves = [];
+let multiPV = 1;
 let initPromise = null;
 
-function initWorker() {
-  if (initPromise) return initPromise;
-  initPromise = new Promise((resolve) => {
-    try {
-      worker = new Worker('/stockfish.js');
-    } catch {
-      resolve(false); return;
-    }
+// ================= INIT =================
+function loadStockfish() {
+if (initPromise) return initPromise;
 
-    let resolved = false;
-    const done = (v) => { if (!resolved) { resolved = true; resolve(v); } };
+initPromise = new Promise((resolve) => {
+const sources = [
+"https://cdn.jsdelivr.net/npm/stockfish@16.0.0/src/stockfish-nnue-16-single.js",
+"https://cdn.jsdelivr.net/npm/stockfish@16.0.0/src/stockfish-16-single.js",
+"https://unpkg.com/stockfish@16.0.0/src/stockfish-nnue-16-single.js"
+];
 
-    worker.onmessage = (e) => {
-      const line = e.data;
-      if (line === 'uciok' || line === 'readyok') {
-        workerReady = true; done(true);
-      }
-    };
-    worker.onerror = () => { worker = null; done(false); };
+const tryNext = (i = 0) => {  
+  if (i >= sources.length) {  
+    failed = true;  
+    resolve(false);  
+    return;  
+  }  
 
-    worker.postMessage('uci');
-    worker.postMessage('isready');
-    setTimeout(() => done(false), 3000);
-  });
-  return initPromise;
+  try {  
+    importScripts(sources[i]);  
+
+    sf =  
+      typeof STOCKFISH !== "undefined"  
+        ? STOCKFISH()  
+        : typeof Stockfish !== "undefined"  
+        ? Stockfish()  
+        : null;  
+
+    if (!sf) return tryNext(i + 1);  
+
+    sf.onmessage = (e) =>  
+      handleMessage(typeof e === "string" ? e : e.data);  
+
+    sf.postMessage("uci");  
+    sf.postMessage("isready");  
+
+    setTimeout(() => resolve(isReady), LOAD_TIMEOUT);  
+  } catch {  
+    tryNext(i + 1);  
+  }  
+};  
+
+tryNext();
+
+});
+
+return initPromise;
 }
 
-function workerMove(fen, depth, multiPV = 1) {
-  return new Promise((resolve) => {
-    if (!worker || !workerReady) { resolve(null); return; }
+// ================= MESSAGE HANDLER =================
+function handleMessage(line) {
+if (!line || failed) return;
 
-    let resolved = false;
-    const topMoves = [];
-
-    worker.onmessage = (e) => {
-      const line = e.data;
-      if (line.startsWith('info') && line.includes('multipv')) {
-        const mpvMatch = line.match(/multipv (\d+)/);
-        const pvMatch = line.match(/ pv ([a-h][1-8][a-h][1-8][qrbn]?)/);
-        if (mpvMatch && pvMatch) topMoves[parseInt(mpvMatch[1]) - 1] = pvMatch[1];
-      }
-      if (line.startsWith('bestmove')) {
-        if (resolved) return;
-        resolved = true;
-        const best = line.split(' ')[1];
-        const pool = topMoves.filter(Boolean);
-        const finalPool = pool.length ? pool : (best && best !== '(none)' && best !== '0000' ? [best] : []);
-        resolve(finalPool.length ? finalPool[Math.floor(Math.random() * finalPool.length)] : null);
-      }
-    };
-
-    worker.postMessage(`setoption name MultiPV value ${multiPV}`);
-    worker.postMessage(`position fen ${fen}`);
-    worker.postMessage(`go depth ${depth}`);
-    setTimeout(() => { if (!resolved) { resolved = true; resolve(null); } }, 6000);
-  });
+// READY STATE
+if (line === "uciok" || line === "readyok") {
+isReady = true;
+self.postMessage({ type: "ready" });
+return;
 }
 
+// ================= PV PARSING (FIXED) =================
+if (line.startsWith("info") && line.includes(" pv ")) {
+const mpv = line.match(/multipv (\d+)/);
+const depth = line.match(/ depth (\d+)/);
+const cp = line.match(/score cp (-?\d+)/);
+const mate = line.match(/score mate (-?\d+)/);
+
+const idx = line.indexOf(" pv ");  
+if (idx === -1) return;  
+
+const pv = line.slice(idx + 4).trim().split(/\s+/);  
+
+const id = mpv ? +mpv[1] : 1;  
+const d = depth ? +depth[1] : 0;  
+
+const prev = topMoves[id];  
+
+// FIX: prefer deeper + avoid overwrite bug  
+if (!prev || d > prev.depth) {  
+  topMoves[id] = {  
+    move: pv[0],  
+    depth: d,  
+    score: mate ? 999999 : cp ? +cp[1] : 0,  
+    pv  
+  };  
+}
+
+}
+
+// ================= BESTMOVE =================
+if (line.startsWith("bestmove")) {
+const best = line.split(" ")[1];
+
+if (pending?.session === session) {  
+  const moves = Object.values(topMoves)  
+    .filter(Boolean)  
+    .sort((a, b) => b.depth - a.depth)  
+    .map((m) => m.move);  
+
+  const final =  
+    moves.length > 0  
+      ? moves  
+      : best && best !== "(none)" && best !== "0000"  
+      ? [best]  
+      : [];  
+
+  pending.resolve(final);  
+  pending = null;  
+}  
+
+topMoves = [];
+
+}
+}
+
+// ================= SEARCH (FIXED RACE SAFETY) =================
+function search(fen, depth, mpv = 1) {
+return new Promise(async (resolve) => {
+const ready = await loadStockfish();
+if (!ready || !sf) return resolve([]);
+
+session++;  
+const mySession = session;  
+
+multiPV = Math.min(Math.max(mpv, 1), MAX_PV);  
+topMoves = [];  
+
+pending = { session: mySession, resolve };  
+
+try {  
+  sf.postMessage("stop");  
+  sf.postMessage("ucinewgame");  
+  sf.postMessage(`setoption name MultiPV value ${multiPV}`);  
+  sf.postMessage(`position fen ${fen}`);  
+  sf.postMessage(`go depth ${depth}`);  
+} catch {}  
+
+setTimeout(() => {  
+  if (pending?.session === mySession) {  
+    pending.resolve([]);  
+    pending = null;  
+    topMoves = [];  
+  }  
+}, SEARCH_TIMEOUT);
+
+});
+}
+
+// ================= STOP =================
+function stop() {
+session++;
+pending = null;
+topMoves = [];
+
+try {
+sf?.postMessage("stop");
+} catch {}
+}
+
+// ================= PUBLIC API =================
 export function createStockfish() {
-  initWorker();
-  return {
-    getBestMove: async (fen, depth, useTopMoves = false) => {
-      const ready = await initWorker();
-      if (ready && worker) {
-        const move = await workerMove(fen, depth, useTopMoves ? 3 : 1);
-        if (move) return move;
-      }
-      return new Promise(resolve => {
-        setTimeout(() => resolve(minimaxMove(fen, Math.min(depth, 5), useTopMoves ? 3 : 1)), 10);
-      });
-    },
-    terminate: () => {
-      if (worker) { worker.terminate(); worker = null; workerReady = false; initPromise = null; }
-    }
-  };
-    }
+loadStockfish().then((ok) => {
+console.log(ok ? "✅ Stockfish ready (v11-lite)" : "⚠️ Stockfish failed");
+});
+
+return {
+getBestMove: async (fen, depth = 10, mpv = 1) => {
+const moves = await search(fen, depth, mpv);
+if (!moves.length) return null;
+return moves[Math.floor(Math.random() * Math.min(mpv, moves.length))];
+},
+
+getBestMoveFromPool: async (fen, depth = 10, poolSize = 3) => {  
+  const moves = await search(fen, depth, poolSize);  
+  if (!moves.length) return null;  
+
+  const pick = moves.slice(0, poolSize);  
+  return pick[Math.floor(Math.random() * pick.length)];  
+},  
+
+stop,  
+
+terminate: () => {  
+  try {  
+    sf?.terminate?.();  
+  } catch {}  
+
+  sf = null;  
+  isReady = false;  
+  failed = false;  
+  pending = null;  
+  topMoves = [];  
+  initPromise = null;  
+  session++;  
+}
+
+};
+}

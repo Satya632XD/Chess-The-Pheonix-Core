@@ -1,5 +1,5 @@
 // =====================================
-// Phoenix Stockfish Bot (v11-lite FINAL)
+// Phoenix Stockfish Bot (v11.2-lite FINAL)
 // =====================================
 
 let sf = null;
@@ -100,10 +100,7 @@ function handleMessage(line) {
         .sort((a, b) => b.depth - a.depth)
         .map(m => m.move);
 
-      pending.resolve(
-        moves.length ? moves : [best]
-      );
-
+      pending.resolve(moves.length ? moves : [best]);
       pending = null;
     }
 

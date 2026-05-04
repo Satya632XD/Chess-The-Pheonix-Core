@@ -231,80 +231,87 @@ return newGame;
 }, [updateCheckSquare, addIncrement]);
 
 const triggerBot = useCallback(async (fen, bot) => {
-if (botLock.current) return;
-botLock.current = true;
-setIsThinking(true);
+  if (botLock.current) return;
+  botLock.current = true;
 
-// Think time counter (1-9 seconds display)  
-setThinkTime(0);  
-thinkTimerRef.current = setInterval(() => {  
-  setThinkTime(t => t + 1);  
-}, 1000);  
+  setIsThinking(true);
+  setThinkTime(0);
 
-try {  
-  if (!bot.useEngine || !engineRef.current) {  
-    // Astra — simple bad bot  
-    await new Promise(r => setTimeout(r, 500 + Math.random() * 1000));  
-    const move = getSimpleMove(fen);  
-    if (move) applyBotMove(move.from, move.to, move.promotion);  
-  } else {  
-    const rand = Math.random();  
-    const isBlunder = rand < bot.blunderRate;  
-    const isInaccuracy = !isBlunder && rand < (bot.blunderRate + bot.inaccuracyRate);  
+  thinkTimerRef.current = setInterval(() => {
+    setThinkTime(t => t + 1);
+  }, 1000);
 
-    if (isBlunder) {  
-      // Genuine blunder — random legal move  
-      await new Promise(r => setTimeout(r, 400 + Math.random() * 800));  
-      const tempGame = new Chess(fen);  
-      const moves = tempGame.moves({ verbose: true });  
-      if (moves.length) {  
-        const m = moves[Math.floor(Math.random() * moves.length)];  
-        applyBotMove(m.from, m.to, m.promotion);  
-      }  
-    } else if (isInaccuracy) {  
-      // Inaccuracy — use engine but pick from bottom portion of moves  
-      await new Promise(r => setTimeout(r, 600 + Math.random() * 1000));  
-      const tempGame = new Chess(fen);  
-      const allMoves = tempGame.moves({ verbose: true });  
-      if (allMoves.length > 5) {  
-        // Pick from worst half  
-        const weakStart = Math.floor(allMoves.length * 0.55);  
-        const weakPool = allMoves.slice(weakStart);  
-        const m = weakPool[Math.floor(Math.random() * weakPool.length)];  
-        applyBotMove(m.from, m.to, m.promotion);  
-      } else {  
-        // Not enough moves — play normally  
-        const move = await engineRef.current.getBestMoveFromPool(fen, Math.min(bot.depth, 8), 1);  
-        if (move) applyBotMove(move.slice(0,2), move.slice(2,4), move[4]);  
-        else {  
-          const fallback = getSimpleMove(fen);  
-          if (fallback) applyBotMove(fallback.from, fallback.to, fallback.promotion);  
-        }  
-      }  
-    } else {  
-      // Normal — use engine with personality pool  
-      const move = await engineRef.current.getBestMoveFromPool(fen, bot.depth, bot.poolSize);  
-      if (move) {  
-        applyBotMove(move.slice(0,2), move.slice(2,4), move[4] || undefined);  
-      } else {  
-        const fallback = getSimpleMove(fen);  
-        if (fallback) applyBotMove(fallback.from, fallback.to, fallback.promotion);  
-      }  
-    }  
-  }  
-} catch (e) {  
-  console.error('Bot error:', e);  
-  const fallback = getSimpleMove(fen);  
-  if (fallback) applyBotMove(fallback.from, fallback.to, fallback.promotion);  
-}  
+  try {
+    // ================= ASTRA =================
+    if (!bot.useEngine || !engineRef.current) {
+      await new Promise(r => setTimeout(r, 600));
+      const move = getSimpleMove(fen);
+      if (move) applyBotMove(move.from, move.to, move.promotion);
+    }
 
-clearInterval(thinkTimerRef.current);  
-setThinkTime(0);  
-setIsThinking(false);  
-botLock.current = false;
+    // ================= ENGINE BOTS =================
+    else {
+      const roll = Math.random();
+
+      const isBlunder = roll < bot.blunderRate;
+      const isInaccuracy = !isBlunder && roll < (bot.blunderRate + bot.inaccuracyRate);
+
+      // 🔴 BLUNDER → random legal move
+      if (isBlunder) {
+        const temp = new Chess(fen);
+        const moves = temp.moves({ verbose: true });
+        if (moves.length) {
+          const m = moves[Math.floor(Math.random() * moves.length)];
+          applyBotMove(m.from, m.to, m.promotion);
+        }
+      }
+
+      // 🟠 INACCURACY → weaker engine play (fixed logic)
+      else if (isInaccuracy) {
+        const move = await engineRef.current.getBestMoveFromPool(
+          fen,
+          Math.max(6, bot.depth - 4),
+          Math.max(2, bot.topMovePool - 2)
+        );
+
+        if (move) {
+          applyBotMove(move.slice(0, 2), move.slice(2, 4), move[4]);
+        } else {
+          const fallback = getSimpleMove(fen);
+          if (fallback) applyBotMove(fallback.from, fallback.to, fallback.promotion);
+        }
+      }
+
+      // 🟢 NORMAL → STRICT TOP MOVE POOL
+      else {
+        const move = await engineRef.current.getBestMoveFromPool(
+          fen,
+          bot.depth,
+          bot.topMovePool
+        );
+
+        if (move) {
+          applyBotMove(move.slice(0, 2), move.slice(2, 4), move[4] || undefined);
+        } else {
+          const fallback = getSimpleMove(fen);
+          if (fallback) applyBotMove(fallback.from, fallback.to, fallback.promotion);
+        }
+      }
+    }
+
+  } catch (e) {
+    console.error('Bot error:', e);
+    const fallback = getSimpleMove(fen);
+    if (fallback) applyBotMove(fallback.from, fallback.to, fallback.promotion);
+  }
+
+  clearInterval(thinkTimerRef.current);
+  setThinkTime(0);
+  setIsThinking(false);
+  botLock.current = false;
 
 }, [applyBotMove]);
-
+  
 const handleSquareClick = useCallback((square) => {
 if (gameOver || isThinking || promotionMove || resignConfirm) return;
 if (!timerRunning && history.length === 0) setTimerRunning(true);

@@ -1,6 +1,6 @@
 // =====================================
-// Phoenix Stockfish Bot (CLEAN v12 FINAL)
-// Single-engine • Stable • MultiPV ready
+// Phoenix Stockfish Bot (v13 CLEAN FINAL)
+// Single-engine • Stable • MultiPV pool
 // =====================================
 
 let sf = null;
@@ -12,8 +12,8 @@ let pending = null;
 let topMoves = [];
 let initPromise = null;
 
-const MAX_PV = 7;        // needed for vortex
-const TIMEOUT = 12000;   // stable timeout
+const MAX_PV = 7;
+const TIMEOUT = 12000;
 
 // ================= INIT =================
 function loadStockfish() {
@@ -63,7 +63,7 @@ function loadStockfish() {
   return initPromise;
 }
 
-// ================= MESSAGE HANDLER =================
+// ================= MESSAGE =================
 function handleMessage(line) {
   if (!line || failed) return;
 
@@ -72,29 +72,26 @@ function handleMessage(line) {
     return;
   }
 
-  // ================= MULTIPV TRACK =================
   if (line.startsWith("info") && line.includes(" pv ")) {
     const pvIndex = line.indexOf(" pv ");
     const pv = line.slice(pvIndex + 4).trim().split(/\s+/);
 
-    const mpvMatch = line.match(/multipv (\d+)/);
-    const depthMatch = line.match(/ depth (\d+)/);
+    const mpv = line.match(/multipv (\d+)/);
+    const depth = line.match(/ depth (\d+)/);
 
-    const id = mpvMatch ? +mpvMatch[1] : 1;
-    const depth = depthMatch ? +depthMatch[1] : 0;
+    const id = mpv ? +mpv[1] : 1;
+    const d = depth ? +depth[1] : 0;
 
     const prev = topMoves[id];
 
-    // keep best depth per line
-    if (!prev || depth > prev.depth) {
+    if (!prev || d > prev.depth) {
       topMoves[id] = {
         move: pv[0],
-        depth
+        depth: d
       };
     }
   }
 
-  // ================= FINAL MOVE =================
   if (line.startsWith("bestmove")) {
     const best = line.split(" ")[1];
 
@@ -137,20 +134,16 @@ function search(fen, depth = 10, mpv = 3) {
       sf.postMessage("stop");
       sf.postMessage("ucinewgame");
 
-      // clamp mpv safely
       const pv = Math.min(Math.max(1, mpv), MAX_PV);
 
       sf.postMessage(`setoption name MultiPV value ${pv}`);
       sf.postMessage(`position fen ${fen}`);
-
-      // depth search (stable + consistent)
       sf.postMessage(`go depth ${depth}`);
     } catch {
       resolve([]);
       return;
     }
 
-    // ================= SAFETY TIMEOUT =================
     setTimeout(() => {
       if (pending?.session === mySession) {
         pending.resolve([]);
@@ -165,19 +158,16 @@ export function createStockfish() {
   loadStockfish();
 
   return {
-    // 🔥 BEST MOVE ONLY (for Phoenix if needed)
     getBestMove: async (fen, depth = 10) => {
       const moves = await search(fen, depth, 1);
       return moves.length ? moves[0] : null;
     },
 
-    // 🔥 MOVE POOL (for all bots)
-    getBestMoveFromPool: async (fen, depth = 10, mpv = 3) => {
+    getBestMoveFromPool: async (fen, depth = 10, mpv = 7) => {
       const moves = await search(fen, depth, mpv);
-      return moves;
+      return moves; // 🔥 FULL POOL
     },
 
-    // stop current search cleanly
     stop: () => {
       session++;
       pending = null;
@@ -187,4 +177,4 @@ export function createStockfish() {
       } catch {}
     }
   };
-      }
+}

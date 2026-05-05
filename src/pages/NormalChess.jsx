@@ -242,6 +242,7 @@ const triggerBot = useCallback(async (fen, bot) => {
   }, 1000);
 
   try {
+    // ================= ASTRA =================
     if (!bot.useEngine || !engineRef.current) {
       await new Promise(r => setTimeout(r, 600));
       const move = getSimpleMove(fen);
@@ -249,14 +250,27 @@ const triggerBot = useCallback(async (fen, bot) => {
       return;
     }
 
-    const pool = await engineRef.current.getBestMoveFromPool(fen, bot.depth, 7);
+    // ================= GET ENGINE MOVES =================
+    let pool = await engineRef.current.getBestMoveFromPool(
+      fen,
+      bot.depth,
+      7
+    );
 
-    if (!pool || !pool.length) {
+    // 🔥 CRITICAL FIX: force array
+    if (typeof pool === "string") pool = [pool];
+    if (!Array.isArray(pool)) pool = [];
+
+    // DEBUG (you can remove later)
+    console.log("ENGINE POOL:", pool);
+
+    if (!pool.length) {
       const fallback = getSimpleMove(fen);
       if (fallback) applyBotMove(fallback.from, fallback.to, fallback.promotion);
       return;
     }
 
+    // ================= HELPERS =================
     const pickTop = (n) =>
       pool[Math.floor(Math.random() * Math.min(n, pool.length))];
 
@@ -269,59 +283,71 @@ const triggerBot = useCallback(async (fen, bot) => {
     let move = null;
     const roll = Math.random();
 
+    // ================= PHOENIX =================
     if (bot.id === "phoenix") {
-      move = pickTop(3);
+      move = pickTop(3); // ONLY top 3
     }
 
+    // ================= ZENITH =================
     else if (bot.id === "zenith") {
       move = pickTop(6);
     }
 
+    // ================= VORTEX =================
     else if (bot.id === "vortex") {
       if (roll < 0.15) {
         const m = randomMove();
-        applyBotMove(m.from, m.to, m.promotion);
+        if (m) applyBotMove(m.from, m.to, m.promotion);
         return;
       }
       move = pickTop(7);
     }
 
+    // ================= TITANX =================
     else if (bot.id === "titanx") {
       if (roll < 0.05) {
         const m = randomMove();
-        applyBotMove(m.from, m.to, m.promotion);
+        if (m) applyBotMove(m.from, m.to, m.promotion);
         return;
       }
       move = roll < 0.25 ? pickTop(5) : pool[0];
     }
 
+    // ================= ORION =================
     else if (bot.id === "orion") {
       if (roll < 0.15) {
         const m = randomMove();
-        applyBotMove(m.from, m.to, m.promotion);
+        if (m) applyBotMove(m.from, m.to, m.promotion);
         return;
       }
       move = roll < 0.40 ? pickTop(5) : pool[0];
     }
 
+    // ================= DEFAULT =================
     else {
       move = pool[0];
     }
 
+    // ================= APPLY MOVE =================
     if (move) {
-      applyBotMove(move.slice(0, 2), move.slice(2, 4), move[4]);
+      applyBotMove(
+        move.slice(0, 2),
+        move.slice(2, 4),
+        move[4] || undefined
+      );
     }
 
   } catch (e) {
     console.error("Bot error:", e);
     const fallback = getSimpleMove(fen);
     if (fallback) applyBotMove(fallback.from, fallback.to, fallback.promotion);
+  } finally {
+    // 🔥 CRITICAL FIX: ALWAYS RUN
+    clearInterval(thinkTimerRef.current);
+    setThinkTime(0);
+    setIsThinking(false);
+    botLock.current = false;
   }
-
-  clearInterval(thinkTimerRef.current);
-  setThinkTime(0);
-  setIsThinking(false);
-  botLock.current = false;
 
 }, [applyBotMove]);
   

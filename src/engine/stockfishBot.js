@@ -13,7 +13,7 @@ let topMoves = [];
 let initPromise = null;
 
 const MAX_PV = 7;
-const TIMEOUT = 12000;
+const TIMEOUT = 20000; // 🔥 increased thinking safety
 
 // ================= INIT =================
 function loadStockfish() {
@@ -72,6 +72,12 @@ function handleMessage(line) {
     return;
   }
 
+  // 🔥 DEBUG: show engine thinking
+  if (line.startsWith("info")) {
+    console.log(line);
+  }
+
+  // ================= MultiPV parsing =================
   if (line.startsWith("info") && line.includes(" pv ")) {
     const pvIndex = line.indexOf(" pv ");
     const pv = line.slice(pvIndex + 4).trim().split(/\s+/);
@@ -92,6 +98,7 @@ function handleMessage(line) {
     }
   }
 
+  // ================= BEST MOVE =================
   if (line.startsWith("bestmove")) {
     const best = line.split(" ")[1];
 
@@ -138,7 +145,10 @@ function search(fen, depth = 10, mpv = 3) {
 
       sf.postMessage(`setoption name MultiPV value ${pv}`);
       sf.postMessage(`position fen ${fen}`);
-      sf.postMessage(`go depth ${depth}`);
+
+      // 🔥 FIX: REAL thinking time instead of unstable depth search
+      sf.postMessage(`go movetime ${Math.max(1500, depth * 200)}`);
+
     } catch {
       resolve([]);
       return;
@@ -165,7 +175,7 @@ export function createStockfish() {
 
     getBestMoveFromPool: async (fen, depth = 10, mpv = 7) => {
       const moves = await search(fen, depth, mpv);
-      return moves; // 🔥 FULL POOL
+      return moves; // 🔥 FULL PV POOL
     },
 
     stop: () => {

@@ -1,24 +1,26 @@
 // =====================================
-// Phoenix Stockfish Bot (v18.0 ENHANCED)
-// Optimized for deep analysis with Stockfish 18
+// Phoenix Stockfish Bot (v19 STABLE)
+// Fixed MultiPV ordering
+// Fixed stale searches
+// Fixed timeout handling
+// Fixed ucinewgame misuse
 // =====================================
+
 let sf = null;
 let isReady = false;
 let failed = false;
 
-let session = 0;
-let pending = null;
-let topMoves = [];
+let searchId = 0;
+let currentSearch = null;
 let initPromise = null;
 
 const MAX_PV = 7;
-const TIMEOUT = 90000; // Extended timeout for deeper analysis
+const TIMEOUT = 90000;
 
 function loadStockfish() {
   if (initPromise) return initPromise;
 
   initPromise = new Promise((resolve) => {
-    // Prioritize Stockfish 18, fall back to 17
     const sources = [
       "https://cdn.jsdelivr.net/npm/stockfish@18.0.0/src/stockfish-nnue-16-single.js",
       "https://unpkg.com/stockfish@18.0.0/src/stockfish-nnue-16-single.js",
@@ -30,13 +32,14 @@ function loadStockfish() {
     const tryNext = (i = 0) => {
       if (i >= sources.length) {
         failed = true;
-        console.error('❌ Failed to load Stockfish from all sources');
+        console.error("❌ Failed to load Stockfish");
         resolve(false);
         return;
       }
 
       try {
-        console.log(`🔄 Loading Stockfish from: ${sources[i]}`);
+        console.log(`🔄 Loading Stockfish from ${sources[i]}`);
+
         importScripts(sources[i]);
 
         sf =
@@ -47,21 +50,25 @@ function loadStockfish() {
             : null;
 
         if (!sf) {
-          console.log(`⚠️ Source ${i} failed, trying next...`);
           return tryNext(i + 1);
         }
 
-        console.log('✅ Stockfish loaded successfully');
-
-        sf.onmessage = (e) =>
-          handleMessage(typeof e === "string" ? e : e.data);
+        sf.onmessage = (e) => {
+          const line = typeof e === "string" ? e : e.data;
+          handleMessage(line);
+        };
 
         sf.postMessage("uci");
         sf.postMessage("isready");
 
-        setTimeout(() => resolve(true), 3000);
-      } catch (e) {
-        console.log(`⚠️ Error loading source ${i}:`, e.message);
+        setTimeout(() => {
+          isReady = true;
+          console.log("✅ Stockfish ready");
+          resolve(true);
+        }, 3000);
+
+      } catch (err) {
+        console.log(`⚠️ Failed source ${i}`, err);
         tryNext(i + 1);
       }
     };
@@ -73,122 +80,226 @@ function loadStockfish() {
 }
 
 function handleMessage(line) {
-  if (!line || failed) return;
+  if (!line || failed || !currentSearch) return;
 
   if (line === "uciok" || line === "readyok") {
     isReady = true;
     return;
   }
 
-  // Parse info lines with principal variations
+  const search = currentSearch;
+
+  // =====================================
+  // MultiPV parsing
+  // =====================================
   if (line.startsWith("info") && line.includes(" pv ")) {
-    const idx = line.indexOf(" pv ");
-    const pv = line.slice(idx + 4).trim().split(/\s+/);
 
-    const mpv = line.match(/multipv (\d+)/);
-    const depth = line.match(/ depth (\d+)/);
-    const seldepth = line.match(/ seldepth (\d+)/);
-    const score = line.match(/ score (cp|mate) (-?\d+)/);
+    const mpvMatch = line.match(/multipv (\d+)/);
+    const depthMatch = line.match(/ depth (\d+)/);
+    const seldepthMatch = line.match(/ seldepth (\d+)/);
 
-    const id = mpv ? +mpv[1] : 1;
-    const d = depth ? +depth[1] : 0;
-    const sd = seldepth ? +seldepth[1] : d;
+    const pvIndex = mpvMatch ? parseInt(mpvMatch[1]) - 1 : 0;
 
-    const prev = topMoves[id];
+    const depth = depthMatch ? parseInt(depthMatch[1]) : 0;
+    const seldepth = seldepthMatch
+      ? parseInt(seldepthMatch[1])
+      : depth;
 
-    if (!prev || d > prev.depth || (d === prev.depth && sd > prev.seldepth)) {
-      topMoves[id] = {
-        move: pv[0],
-        depth: d,
-        seldepth: sd,
-        score: score ? score[0] : null
+    const pvStart = line.indexOf(" pv ");
+
+    if (pvStart === -1) return;
+
+    const pv = line
+      .slice(pvStart + 4)
+      .trim()
+      .split(/\s+/);
+
+    const move = pv[0];
+
+    if (!move) return;
+
+    const previous = search.topMoves[pvIndex];
+
+    // keep deepest line for each multipv slot
+    if (
+      !previous ||
+      depth > previous.depth ||
+      (
+        depth === previous.depth &&
+        seldepth > previous.seldepth
+      )
+    ) {
+      search.topMoves[pvIndex] = {
+        move,
+        depth,
+        seldepth
       };
     }
   }
 
-  // When search completes
+  // =====================================
+  // Search complete
+  // =====================================
   if (line.startsWith("bestmove")) {
-    const best = line.split(" ")[1];
 
-    if (pending?.session === session) {
-      const moves = Object.values(topMoves)
-        .filter(Boolean)
-        .sort((a, b) => {
-          if (b.depth !== a.depth) return b.depth - a.depth;
-          return b.seldepth - a.seldepth;
-        })
-        .map(m => m.move);
+    const bestMove = line.split(" ")[1];
 
-      pending.resolve(moves.length ? moves : [best]);
-      pending = null;
-    }
+    if (!currentSearch) return;
 
-    topMoves = [];
+    const moves = currentSearch.topMoves
+      .filter(Boolean)
+      .map(m => m.move);
+
+    currentSearch.resolve(
+      moves.length ? moves : [bestMove]
+    );
+
+    currentSearch = null;
   }
 }
 
-function search(fen, depth, mpv = 1) {
-  return new Promise(async (resolve) => {
-    const ready = await loadStockfish();
-    if (!ready || !sf) {
-      console.error('❌ Stockfish not ready');
-      return resolve([]);
+async function search(fen, depth = 10, mpv = 1, moveTime = null) {
+
+  const ready = await loadStockfish();
+
+  if (!ready || !sf) {
+    console.error("❌ Stockfish unavailable");
+    return [];
+  }
+
+  stop();
+
+  searchId++;
+
+  const mySearchId = searchId;
+
+  return new Promise((resolve) => {
+
+    currentSearch = {
+      id: mySearchId,
+      resolve,
+      topMoves: []
+    };
+
+    const limitedMPV = Math.min(
+      Math.max(1, mpv),
+      MAX_PV
+    );
+
+    sf.postMessage(`setoption name MultiPV value ${limitedMPV}`);
+
+    sf.postMessage(`position fen ${fen}`);
+
+    console.log(
+      `🔍 Search depth=${depth} mpv=${limitedMPV}`
+    );
+
+    if (moveTime) {
+      sf.postMessage(`go movetime ${moveTime}`);
+    } else {
+      sf.postMessage(`go depth ${depth}`);
     }
 
-    session++;
-    const mySession = session;
-
-    topMoves = [];
-    pending = { session: mySession, resolve };
-
-    sf.postMessage("stop");
-    sf.postMessage("ucinewgame");
-    
-    const mpvCount = Math.min(mpv, MAX_PV);
-    sf.postMessage(`setoption name MultiPV value ${mpvCount}`);
-    sf.postMessage(`position fen ${fen}`);
-    
-    console.log(`🔍 Starting search: depth=${depth}, mpv=${mpvCount}`);
-    sf.postMessage(`go depth ${depth}`);
-
     setTimeout(() => {
-      if (pending?.session === mySession) {
-        console.log('⏱️ Search timeout, returning current best moves');
-        pending.resolve(Object.values(topMoves)
-          .filter(Boolean)
-          .map(m => m.move)
-        );
-        pending = null;
+
+      if (
+        currentSearch &&
+        currentSearch.id === mySearchId
+      ) {
+
+        console.log("⏱️ Search timeout");
+
+        sf.postMessage("stop");
+
+        const fallbackMoves =
+          currentSearch.topMoves
+            .filter(Boolean)
+            .map(m => m.move);
+
+        currentSearch.resolve(fallbackMoves);
+
+        currentSearch = null;
       }
+
     }, TIMEOUT);
   });
 }
 
+function stop() {
+
+  searchId++;
+
+  if (sf) {
+    try {
+      sf.postMessage("stop");
+    } catch {}
+  }
+
+  currentSearch = null;
+}
+
+function newGame() {
+  if (sf) {
+    sf.postMessage("ucinewgame");
+  }
+}
+
+function terminate() {
+
+  stop();
+
+  try {
+    sf?.postMessage("quit");
+  } catch {}
+
+  sf = null;
+  isReady = false;
+}
+
 export function createStockfish() {
+
   loadStockfish();
 
   return {
-    getBestMove: async (fen, depth = 10, mpv = 1) => {
-      const moves = await search(fen, depth, mpv);
-      return moves.length ? moves[0] : null;
+
+    getBestMove: async (
+      fen,
+      depth = 10,
+      mpv = 1,
+      moveTime = null
+    ) => {
+
+      const moves = await search(
+        fen,
+        depth,
+        mpv,
+        moveTime
+      );
+
+      return moves?.[0] || null;
     },
 
-    getBestMoveFromPool: async (fen, depth = 10, mpv = 7) => {
-      const moves = await search(fen, depth, mpv);
-      return moves.length ? moves : [];
+    getBestMoveFromPool: async (
+      fen,
+      depth = 10,
+      mpv = 7,
+      moveTime = null
+    ) => {
+
+      const moves = await search(
+        fen,
+        depth,
+        mpv,
+        moveTime
+      );
+
+      return moves || [];
     },
 
-    stop: () => {
-      session++;
-      pending = null;
-      topMoves = [];
-      sf?.postMessage("stop");
-    },
+    stop,
 
-    terminate: () => {
-      sf?.postMessage("stop");
-      sf = null;
-      isReady = false;
-    }
+    newGame,
+
+    terminate
   };
-}
+    }

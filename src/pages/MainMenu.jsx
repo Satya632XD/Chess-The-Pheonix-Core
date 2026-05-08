@@ -14,7 +14,7 @@ export const TIMER_MODES = [
   { id: 11, label: '▲ 30 min', seconds: 1800, increment: 0 },
 ];
 
-export default function MainMenu({ onPlayNormal, onPlayPhoenix, onPlayOnline, onProfile, onLeaderboard }) {
+export default function MainMenu({ onPlayNormal, onPlayPhoenix, onPlayOnline, onProfile, onLeaderboard, onAnalysis }) {
   const [showTimerSelect, setShowTimerSelect] = useState(null);
   const [selectedTimer, setSelectedTimer] = useState(TIMER_MODES[0]);
 
@@ -38,6 +38,7 @@ export default function MainMenu({ onPlayNormal, onPlayPhoenix, onPlayOnline, on
       gradient: 'from-blue-500/20 to-blue-700/10',
       border: 'border-blue-500/30',
       glow: 'hover:shadow-[0_0_24px_rgba(59,130,246,0.2)]',
+      requiresTimer: true,
     },
     {
       id: 'normal',
@@ -47,6 +48,7 @@ export default function MainMenu({ onPlayNormal, onPlayPhoenix, onPlayOnline, on
       gradient: 'from-amber-500/20 to-amber-700/10',
       border: 'border-amber-500/30',
       glow: 'hover:shadow-[0_0_24px_rgba(245,158,11,0.15)]',
+      requiresTimer: true,
     },
     {
       id: 'phoenix',
@@ -56,6 +58,17 @@ export default function MainMenu({ onPlayNormal, onPlayPhoenix, onPlayOnline, on
       gradient: 'from-orange-600/20 to-red-800/10',
       border: 'border-orange-500/30',
       glow: 'hover:shadow-[0_0_24px_rgba(249,115,22,0.2)]',
+      requiresTimer: true,
+    },
+    {
+      id: 'analysis',
+      icon: '📊',
+      title: 'Analysis Mode',
+      subtitle: 'Review & analyze your games',
+      gradient: 'from-cyan-500/20 to-blue-700/10',
+      border: 'border-cyan-500/30',
+      glow: 'hover:shadow-[0_0_24px_rgba(34,211,238,0.2)]',
+      requiresTimer: false,
     },
   ];
 
@@ -139,7 +152,14 @@ export default function MainMenu({ onPlayNormal, onPlayPhoenix, onPlayOnline, on
           {menuItems.map((item) => (
             <button
               key={item.id}
-              onClick={() => handleModeSelect(item.id)}
+              onClick={() => {
+                // For analysis mode, don't show timer selection, just call onAnalysis directly
+                if (item.id === 'analysis') {
+                  onAnalysis();
+                } else {
+                  handleModeSelect(item.id);
+                }
+              }}
               className={`flex items-center gap-4 px-5 py-4 rounded-2xl border bg-gradient-to-r ${item.gradient} ${item.border} ${item.glow} transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] text-left`}
             >
               <span className="text-2xl">{item.icon}</span>

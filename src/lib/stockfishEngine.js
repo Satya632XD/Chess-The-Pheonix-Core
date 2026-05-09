@@ -1,13 +1,32 @@
 let engine = null;
 
+function normalizeEval(score, mate) {
+  if (mate !== null) {
+    if (mate > 0) {
+      return 10000 - mate;
+    }
+
+    return -10000 - mate;
+  }
+
+  return score;
+}
+
 export async function initEngine() {
   return new Promise((resolve) => {
+    if (engine) {
+      resolve();
+      return;
+    }
+
     engine = new Worker('/stockfish.js');
 
     engine.postMessage('uci');
 
     engine.onmessage = (e) => {
-      if (e.data === 'uciok') {
+      const line = e.data;
+
+      if (line === 'uciok') {
         resolve();
       }
     };
@@ -20,100 +39,35 @@ export async function evaluatePosition(
 ) {
   return new Promise((resolve) => {
     let latestEval = 0;
-    let bestMove = null;
-    let pv = '';
     let mate = null;
-
-    // ============================================
-    // IMPORTANT:
-    // Stockfish gives eval from side-to-move
-    // perspective.
-    //
-    // We convert EVERYTHING into
-    // WHITE perspective.
-    // ============================================
-
-    const sideToMove =
-      fen.split(' ')[1];
+    let bestMove = '';
+    let pv = '';
 
     engine.onmessage = (e) => {
       const line = e.data;
 
-      // ============================================
-      // CENTIPAWN SCORE
-      // ============================================
-
+      // Centipawn score
       if (line.includes('score cp')) {
         const match =
           line.match(/score cp (-?\d+)/);
 
         if (match) {
-          let evalCp = parseInt(
-            match[1]
-          );
-
-          // Convert to WHITE perspective
-          if (sideToMove === 'b') {
-            evalCp = -evalCp;
-          }
-
-          latestEval = evalCp;
+          latestEval = parseInt(match[1]);
+          mate = null;
         }
       }
 
-      // ============================================
-      // MATE SCORE
-      // ============================================
-
+      // Mate score
       if (line.includes('score mate')) {
         const mateMatch =
           line.match(/score mate (-?\d+)/);
 
         if (mateMatch) {
-          let mateScore = parseInt(
-            mateMatch[1]
-          );
-
-          // Convert to WHITE perspective
-          if (sideToMove === 'b') {
-            mateScore = -mateScore;
-          }
-
-          mate = mateScore;
-
-          // ============================================
-          // PROFESSIONAL FIX:
-          //
-          // Convert mate scores into huge evals
-          // so:
-          //
-          // - ACPL works
-          // - Accuracy works
-          // - Blunder detection works
-          // - Eval graph works
-          // - Turning points work
-          // ============================================
-
-          // Mate in 1  => 9999
-          // Mate in 2  => 9998
-          // Mate in -1 => -9999
-
-          if (mateScore > 0) {
-            latestEval =
-              10000 -
-              Math.abs(mateScore);
-          } else {
-            latestEval =
-              -10000 +
-              Math.abs(mateScore);
-          }
+          mate = parseInt(mateMatch[1]);
         }
       }
 
-      // ============================================
-      // PRINCIPAL VARIATION
-      // ============================================
-
+      // Principal variation
       if (line.includes(' pv ')) {
         const pvMatch =
           line.match(/ pv (.+)/);
@@ -123,37 +77,41 @@ export async function evaluatePosition(
         }
       }
 
-      // ============================================
-      // BEST MOVE
-      // ============================================
-
+      // Final best move
       if (line.includes('bestmove')) {
-        const parts =
-          line.split(' ');
-
+        const parts = line.split(' ');
         bestMove = parts[1];
 
+        const sideToMove =
+          fen.split(' ')[1];
+
+        let finalEval =
+          normalizeEval(
+            latestEval,
+            mate
+          );
+
+        // Make positive always mean White advantage
+        if (sideToMove === 'b') {
+          finalEval = -finalEval;
+        }
+
         resolve({
-          eval: latestEval,
+          eval: finalEval,
+          rawEval: latestEval,
+          mate,
           bestMove,
           pv,
-          mate,
           depth,
         });
       }
     };
 
-    // ============================================
-    // SEND POSITION
-    // ============================================
+    engine.postMessage('ucinewgame');
 
     engine.postMessage(
       `position fen ${fen}`
     );
-
-    // ============================================
-    // START SEARCH
-    // ============================================
 
     engine.postMessage(
       `go depth ${depth}`

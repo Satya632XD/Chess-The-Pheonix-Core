@@ -1,8 +1,9 @@
+// src/pages/AuthPage.jsx
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 
 export default function AuthPage({ onSuccess }) {
-  const { login, register } = useAuth();
+  const { login, register, serverReady } = useAuth();
   const [isLogin, setIsLogin] = useState(true);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -41,7 +42,16 @@ export default function AuthPage({ onSuccess }) {
     setLoading(false);
   };
 
-  const inputClass = "w-full px-4 py-3 rounded-xl bg-card border border-border text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary transition-colors text-sm";
+  const isDisabled = loading || !serverReady;
+
+  const buttonLabel = () => {
+    if (!serverReady) return 'Connecting to server...';
+    if (loading) return 'Please wait...';
+    return isLogin ? 'Login' : 'Create Account';
+  };
+
+  const inputClass =
+    'w-full px-4 py-3 rounded-xl bg-card border border-border text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary transition-colors text-sm';
 
   return (
     <div className="min-h-screen bg-background flex flex-col items-center justify-center p-6 font-inter">
@@ -50,6 +60,13 @@ export default function AuthPage({ onSuccess }) {
       <p className="text-muted-foreground text-sm mb-8">
         {isLogin ? 'Welcome back!' : 'Create your account'}
       </p>
+
+      {/* Server wake indicator */}
+      {!serverReady && (
+        <div className="w-full max-w-sm mb-4 text-xs text-center text-yellow-400 bg-yellow-500/10 border border-yellow-500/20 rounded-xl px-4 py-2">
+          ⏳ Waking up server — this takes up to 30 seconds on first load...
+        </div>
+      )}
 
       <div className="w-full max-w-sm space-y-3">
         <div>
@@ -71,7 +88,7 @@ export default function AuthPage({ onSuccess }) {
             value={password}
             onChange={e => setPassword(e.target.value)}
             placeholder={isLogin ? 'Enter password' : 'Min 6 characters'}
-            onKeyDown={e => e.key === 'Enter' && handleSubmit()}
+            onKeyDown={e => e.key === 'Enter' && !isDisabled && handleSubmit()}
             className={inputClass}
           />
         </div>
@@ -124,10 +141,10 @@ export default function AuthPage({ onSuccess }) {
 
         <button
           onClick={handleSubmit}
-          disabled={loading}
-          className="w-full py-4 rounded-xl bg-primary text-primary-foreground font-bold text-base hover:bg-primary/90 disabled:opacity-50 transition-colors"
+          disabled={isDisabled}
+          className="w-full py-4 rounded-xl bg-primary text-primary-foreground font-bold text-base hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
-          {loading ? 'Please wait...' : isLogin ? 'Login' : 'Create Account'}
+          {buttonLabel()}
         </button>
 
         <button
@@ -146,4 +163,4 @@ export default function AuthPage({ onSuccess }) {
       </div>
     </div>
   );
-              }
+          }

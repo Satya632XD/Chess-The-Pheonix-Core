@@ -14,6 +14,12 @@ from 'react-chessboard';
 import { parsePgn } from '../lib/pgnParser';
 
 import {
+  buildAnalysisText,
+  downloadTextFile,
+  explainMove,
+} from '../lib/analysisExport';
+
+import {
   analyzeGame,
   COACH_PERSONAS,
   CLASSIFICATION_COLOR,
@@ -111,6 +117,137 @@ ${result.pv}`
     }
   }
 
+  function resetOfflineBoard() {
+    const freshBoard = new Chess();
+
+    setAnalysisBoard(freshBoard);
+    setPgn('');
+  }
+
+  async function analyzePgnText(pgnText) {
+    const parsed =
+      parsePgn(pgnText);
+
+    const analyzedMoves =
+      [];
+
+    const chess =
+      new Chess();
+
+    for (
+      let i = 0;
+      i <
+      parsed.history.length;
+      i++
+    ) {
+      const move =
+        parsed.history[i];
+
+      const beforeFen =
+        chess.fen();
+
+      const movingSide =
+        chess.turn();
+
+      const beforeEval =
+        await evaluatePosition(
+          beforeFen,
+          10
+        );
+
+      const legalMoves =
+        chess.moves()
+          .length;
+
+      chess.move(move);
+
+      const afterFen =
+        chess.fen();
+
+      const afterEval =
+        await evaluatePosition(
+          afterFen,
+          10
+        );
+
+      const bestEval =
+        beforeEval.eval;
+
+      const playedEval =
+        -afterEval.eval;
+
+      analyzedMoves.push({
+        ...move,
+
+        moveNumber:
+          Math.floor(i / 2) +
+          1,
+
+        side:
+          movingSide,
+
+        prevEval:
+          i === 0
+            ? 0
+            : analyzedMoves[
+                i - 1
+              ]
+                .playedEval,
+
+        bestEval,
+
+        playedEval,
+
+        evalLoss:
+          Math.max(
+            0,
+            bestEval -
+              playedEval
+          ),
+
+        bestMove:
+          beforeEval.bestMove,
+
+        pv:
+          beforeEval.pv,
+
+        mate:
+          afterEval.mate,
+
+        legalMoves,
+      });
+    }
+
+    const analysisResult =
+      analyzeGame(
+        analyzedMoves
+      );
+
+    analyzedMoves.forEach((move) => {
+      move.explanation =
+        explainMove(move);
+    });
+
+    setUploadedGame({
+      ...parsed,
+      sourcePgn: pgnText,
+      moveHistory:
+        analyzedMoves,
+    });
+
+    setAnalysis(
+      analysisResult
+    );
+
+    setCurrentMoveIndex(
+      0
+    );
+
+    setGameState(
+      'analysis'
+    );
+  }
+
   // =========================
   // PGN ANALYSIS
   // =========================
@@ -127,105 +264,8 @@ ${result.pv}`
 
       setLoading(true);
 
-      const parsed =
-        parsePgn(pgn);
-
-      const analyzedMoves =
-        [];
-
-      const chess =
-        new Chess();
-
-      for (
-        let i = 0;
-        i <
-        parsed.history.length;
-        i++
-      ) {
-        const move =
-          parsed.history[i];
-
-        // POSITION BEFORE MOVE
-
-        const beforeFen =
-          chess.fen();
-
-        const beforeEval =
-          await evaluatePosition(
-            beforeFen,
-            10
-          );
-
-        const legalMoves =
-          chess.moves()
-            .length;
-
-        // PLAY MOVE
-
-        chess.move(move);
-
-        // POSITION AFTER MOVE
-
-        const afterFen =
-          chess.fen();
-
-        const afterEval =
-          await evaluatePosition(
-            afterFen,
-            10
-          );
-
-        analyzedMoves.push({
-          ...move,
-
-          prevEval:
-            i === 0
-              ? 0
-              : analyzedMoves[
-                  i - 1
-                ]
-                  .playedEval,
-
-          bestEval:
-            beforeEval.eval,
-
-          playedEval:
-            afterEval.eval,
-
-          bestMove:
-            beforeEval.bestMove,
-
-          pv:
-            beforeEval.pv,
-
-          mate:
-            afterEval.mate,
-
-          legalMoves,
-        });
-      }
-
-      const analysisResult =
-        analyzeGame(
-          analyzedMoves
-        );
-
-      setUploadedGame({
-        ...parsed,
-        moveHistory:
-          analyzedMoves,
-      });
-
-      setAnalysis(
-        analysisResult
-      );
-
-      setCurrentMoveIndex(
-        0
-      );
-
-      setGameState(
-        'analysis'
+      await analyzePgnText(
+        pgn
       );
     } catch (err) {
       console.error(err);
@@ -237,6 +277,57 @@ ${result.pv}`
     } finally {
       setLoading(false);
     }
+  }
+
+
+
+  async function handleOfflineGameAnalysis() {
+    const offlinePgn =
+      analysisBoard.pgn();
+
+    if (!offlinePgn.trim()) {
+      alert(
+        'Play at least one move on the offline board first.'
+      );
+
+      return;
+    }
+
+    setPgn(offlinePgn);
+    setLoading(true);
+
+    try {
+      await analyzePgnText(
+        offlinePgn
+      );
+    } catch (err) {
+      console.error(err);
+
+      alert(
+        err.message ||
+          'Failed to analyze offline game'
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function exportOfflinePgn() {
+    const offlinePgn =
+      analysisBoard.pgn();
+
+    if (!offlinePgn.trim()) {
+      alert(
+        'Play at least one move before exporting PGN.'
+      );
+
+      return;
+    }
+
+    downloadTextFile(
+      'offline-game.pgn',
+      offlinePgn
+    );
   }
 
   // =========================
@@ -412,10 +503,57 @@ ${result.pv}`
           </button>
 
           <button
+            onClick={
+              handleOfflineGameAnalysis
+            }
+            disabled={
+              loading
+            }
+            style={{
+              padding:
+                '12px 20px',
+              borderRadius: 8,
+              border: 'none',
+              cursor:
+                'pointer',
+              backgroundColor:
+                '#9c27b0',
+              color: 'white',
+              fontWeight:
+                'bold',
+              fontSize: 15,
+            }}
+          >
+            Analyze Offline
+            Game
+          </button>
+
+          <button
+            onClick={
+              exportOfflinePgn
+            }
+            style={{
+              padding:
+                '12px 20px',
+              borderRadius: 8,
+              border: 'none',
+              cursor:
+                'pointer',
+              backgroundColor:
+                '#607d8b',
+              color: 'white',
+              fontWeight:
+                'bold',
+              fontSize: 15,
+            }}
+          >
+            Export Offline
+            PGN
+          </button>
+
+          <button
             onClick={() => {
-              setAnalysisBoard(
-                new Chess()
-              );
+              resetOfflineBoard();
             }}
             style={{
               padding:
@@ -432,7 +570,7 @@ ${result.pv}`
               fontSize: 15,
             }}
           >
-            Reset Board
+            Reset Offline Game
           </button>
 
           <input
@@ -766,6 +904,13 @@ ${result.pv}`
               {move.pv}
             </div>
 
+            <div>
+              <strong>
+                Why:
+              </strong>{' '}
+              {move.explanation}
+            </div>
+
             {move.mate !==
               null && (
               <div>
@@ -896,6 +1041,76 @@ ${result.pv}`
       {/* RIGHT PANEL */}
 
       <div>
+        <div
+          style={{
+            backgroundColor:
+              '#1c1c1c',
+            padding: 20,
+            borderRadius: 12,
+            marginBottom: 20,
+          }}
+        >
+          <h2>
+            Export Analysis
+          </h2>
+
+          <button
+            onClick={() =>
+              downloadTextFile(
+                'chess-analysis.txt',
+                buildAnalysisText(
+                  uploadedGame,
+                  analysis,
+                  gameNotes
+                )
+              )
+            }
+            style={{
+              padding:
+                '12px',
+              borderRadius: 8,
+              border: 'none',
+              cursor:
+                'pointer',
+              backgroundColor:
+                '#00cc66',
+              color: 'black',
+              fontWeight:
+                'bold',
+              width: '100%',
+              marginBottom: 10,
+            }}
+          >
+            Export Text Report
+          </button>
+
+          <button
+            onClick={() =>
+              downloadTextFile(
+                'analyzed-game.pgn',
+                uploadedGame.sourcePgn ||
+                  pgn
+              )
+            }
+            style={{
+              padding:
+                '12px',
+              borderRadius: 8,
+              border: 'none',
+              cursor:
+                'pointer',
+              backgroundColor:
+                '#607d8b',
+              color: 'white',
+              fontWeight:
+                'bold',
+              width: '100%',
+            }}
+          >
+            Export PGN
+          </button>
+        </div>
+
         {/* COACH */}
 
         <div

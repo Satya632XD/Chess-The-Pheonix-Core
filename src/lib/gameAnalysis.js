@@ -124,9 +124,13 @@ export function analyzeGame(moves) {
   let totalEvalLoss = 0;
 
   moves.forEach((move, index) => {
-    const loss = Math.abs(
-      move.bestEval - move.playedEval
-    );
+    const loss =
+      move.evalLoss ??
+      Math.max(
+        0,
+        move.bestEval -
+          move.playedEval
+      );
 
     totalEvalLoss += loss;
 

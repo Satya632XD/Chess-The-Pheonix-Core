@@ -11,6 +11,8 @@ import { Chess } from 'chess.js';
 import { Chessboard }
 from 'react-chessboard';
 
+import EvalBar from '../components/chess/EvalBar';
+
 import { parsePgn } from '../lib/pgnParser';
 
 import {
@@ -48,6 +50,11 @@ export default function AnalysisMode({
   const [
     currentMoveIndex,
     setCurrentMoveIndex,
+  ] = useState(0);
+
+  const [
+    analysisProgress,
+    setAnalysisProgress,
   ] = useState(0);
 
   const [
@@ -94,7 +101,8 @@ export default function AnalysisMode({
       const result =
         await evaluatePosition(
           fen,
-          12
+          12,
+          4000
         );
 
       alert(
@@ -131,6 +139,7 @@ ${result.pv}`
       }
 
       setLoading(true);
+      setAnalysisProgress(0);
 
       // FIX: explicitly await engine readiness before looping searches.
       // The old code relied on a fire-and-forget initEngine() call in
@@ -148,10 +157,19 @@ ${result.pv}`
       const chess =
         new Chess();
 
+      const totalMoves = parsed.history.length;
+
+      // Batch depth is intentionally lower than the interactive
+      // "Analyze Current Board" depth (12): this loop runs up to 2x
+      // per move (before + after) across the whole game, so depth 8
+      // with a tighter 2500ms movetime keeps total wait reasonable
+      // (worst case ~2500ms * 2 * moveCount instead of 4000ms * 2 * moveCount).
+      const BATCH_DEPTH = 8;
+      const BATCH_MOVETIME = 2500;
+
       for (
         let i = 0;
-        i <
-        parsed.history.length;
+        i < totalMoves;
         i++
       ) {
         const move =
@@ -169,7 +187,8 @@ ${result.pv}`
         const beforeEval =
           await evaluatePosition(
             beforeFen,
-            10
+            BATCH_DEPTH,
+            BATCH_MOVETIME
           );
 
         const legalMoves =
@@ -188,7 +207,8 @@ ${result.pv}`
         const afterEval =
           await evaluatePosition(
             afterFen,
-            10
+            BATCH_DEPTH,
+            BATCH_MOVETIME
           );
 
         // FIX: beforeEval.eval / afterEval.eval are both normalized to a
@@ -248,6 +268,9 @@ ${result.pv}`
           // White-signed bestEval/playedEval fields.
           loss,
         });
+
+        // NEW: update progress after every move so the UI reflects real work
+        setAnalysisProgress(Math.round(((i + 1) / totalMoves) * 100));
       }
 
       const analysisResult =
@@ -281,6 +304,7 @@ ${result.pv}`
       );
     } finally {
       setLoading(false);
+      setAnalysisProgress(0);
     }
   }
 
@@ -407,7 +431,7 @@ ${result.pv}`
             }}
           >
             {loading
-              ? 'Analyzing...'
+              ? `Analyzing... ${analysisProgress}%`
               : 'Analyze Game'}
           </button>
 
@@ -646,18 +670,51 @@ ${result.pv}`
 
         <div
           style={{
-            maxWidth: 700,
+            display: 'flex',
+            gap: 16,
             marginBottom: 20,
           }}
         >
-          <Chessboard
-            position={
-              uploadedGame
-                .fenHistory[
-                currentMoveIndex
-              ]
-            }
-          />
+          <div
+            style={{
+              maxWidth: 700,
+              flex: 1,
+            }}
+          >
+            <Chessboard
+              position={
+                uploadedGame
+                  .fenHistory[
+                  currentMoveIndex
+                ]
+              }
+            />
+          </div>
+
+          {/* NEW: eval bar next to the board */}
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: 8,
+            }}
+          >
+            <EvalBar
+              evalScore={(move.playedEval || 0) / 100}
+            />
+            <div
+              style={{
+                fontSize: 12,
+                color: '#aaa',
+                fontFamily: 'monospace',
+              }}
+            >
+              {move.mate !== null && move.mate !== undefined
+                ? `M${Math.abs(move.mate)}`
+                : ((move.playedEval || 0) / 100).toFixed(2)}
+            </div>
+          </div>
         </div>
 
         {/* GAME INFO */}

@@ -124,7 +124,13 @@ export function analyzeGame(moves) {
   let totalEvalLoss = 0;
 
   moves.forEach((move, index) => {
-    const loss = Math.abs(
+    // FIX: use the precomputed, mover-perspective-corrected loss when
+    // available (set by AnalysisMode.jsx's handlePgnUpload). Falling back
+    // to Math.abs(bestEval - playedEval) is kept only for callers that
+    // don't supply `loss` (e.g. GameAnalysis.jsx's mock-data path) — that
+    // fallback is still perspective-blind and will misclassify Black moves,
+    // so any real analysis pipeline should always supply `loss` directly.
+    const loss = move.loss ?? Math.abs(
       move.bestEval - move.playedEval
     );
 

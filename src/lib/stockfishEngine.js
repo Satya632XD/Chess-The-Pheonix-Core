@@ -65,7 +65,7 @@ export async function initEngine() {
           'setoption name Threads value ' +
             Math.max(1, Math.min(4, navigator.hardwareConcurrency || 1))
         );
-        engine.postMessage('setoption name Hash value 64');
+        engine.postMessage('setoption name Hash value 128');
         resolve();
       }
     };
@@ -80,7 +80,7 @@ export async function initEngine() {
 // in flight against `engine` at a time (enforced by the `queue` chain
 // in evaluatePosition below) — this prevents overlapping onmessage
 // handlers from stomping each other and hanging promises.
-function runSearch(commands, depth) {
+function runSearch(commands, depth, moveTime = 4000) {
   return new Promise((resolve, reject) => {
     if (!engine || !ready) {
       reject(new Error('Engine not ready'));
@@ -93,12 +93,16 @@ function runSearch(commands, depth) {
     let mate = null;
     let settled = false;
 
+    // FIX: was 8000ms against a `movetime 4000` engine instruction — nearly
+    // double the intended wait on every single call. Now dynamic based on
+    // moveTime: a 500ms buffer over the engine's own movetime budget, enough
+    // for message round-trip without doubling worst-case latency across an 80-call loop.
     const timeout = setTimeout(() => {
       if (settled) return;
       settled = true;
       try { engine.postMessage('stop'); } catch {}
       resolve({ eval: latestEval, bestMove, pv, mate, depth });
-    }, 8000);
+    }, moveTime + 500);
 
     engine.onmessage = (e) => {
       const line = typeof e.data === 'string' ? e.data : '';
@@ -135,13 +139,14 @@ function runSearch(commands, depth) {
 
 // Public API — every call goes through `queue` so calls never overlap and
 // never drop/hang on a stomped onmessage handler.
-export function evaluatePosition(fen, depth = 12) {
+export function evaluatePosition(fen, depth = 12, moveTime = 4000) {
   const task = async () => {
     await initEngine();
     const sideToMove = fen.split(' ')[1] === 'b' ? 'black' : 'white';
     const result = await runSearch(
-      [`position fen ${fen}`, `go depth ${depth} movetime 4000`],
-      depth
+      [`position fen ${fen}`, `go depth ${depth} movetime ${moveTime}`],
+      depth,
+      moveTime
     );
     // Normalize to White-positive perspective.
     const normalizedEval = sideToMove === 'black' ? -result.eval : result.eval;

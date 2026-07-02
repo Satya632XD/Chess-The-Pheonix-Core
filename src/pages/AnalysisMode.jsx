@@ -73,8 +73,13 @@ export default function AnalysisMode({
   const fileInputRef =
     useRef(null);
 
+  // FIX: previously this fired initEngine() and forgot about it
+  // (fire-and-forget), so evaluatePosition() could be called before the
+  // engine was actually ready. initEngine() itself is now idempotent and
+  // safe to call again later (it returns immediately if already ready/
+  // in-progress), so we just log failures here instead of blocking render.
   useEffect(() => {
-    initEngine();
+    initEngine().catch((e) => console.error('Engine init failed:', e));
   }, []);
 
   // =========================
@@ -127,6 +132,13 @@ ${result.pv}`
 
       setLoading(true);
 
+      // FIX: explicitly await engine readiness before looping searches.
+      // The old code relied on a fire-and-forget initEngine() call in
+      // useEffect and had no queueing in stockfishEngine.js, so calls could
+      // overlap, stomp each other's onmessage handler, and hang forever —
+      // this was the actual cause of "Analyze Game" freezing with no error.
+      await initEngine();
+
       const parsed =
         parsePgn(pgn);
 
@@ -144,6 +156,10 @@ ${result.pv}`
       ) {
         const move =
           parsed.history[i];
+
+        // Color making this move, captured BEFORE chess.move() advances turn.
+        const moverColor =
+          chess.turn();
 
         // POSITION BEFORE MOVE
 
@@ -175,6 +191,30 @@ ${result.pv}`
             10
           );
 
+        // FIX: beforeEval.eval / afterEval.eval are both normalized to a
+        // White-positive convention by stockfishEngine.js. To measure how
+        // much the MOVER actually lost, we have to reorient both evals to
+        // the mover's own perspective before diffing — otherwise a Black
+        // move that helps Black (a good move) looks identical to a Black
+        // move that helps White (a blunder), because the raw White-signed
+        // numbers move in the same direction either way from Black's
+        // perspective without this correction. This was silently
+        // misclassifying roughly half of all moves (every Black move).
+        const beforeFromMover =
+          moverColor === 'w'
+            ? beforeEval.eval
+            : -beforeEval.eval;
+
+        const afterFromMover =
+          moverColor === 'w'
+            ? afterEval.eval
+            : -afterEval.eval;
+
+        const loss = Math.max(
+          0,
+          beforeFromMover - afterFromMover
+        );
+
         analyzedMoves.push({
           ...move,
 
@@ -202,6 +242,11 @@ ${result.pv}`
             afterEval.mate,
 
           legalMoves,
+
+          // Precomputed, mover-perspective-correct loss. gameAnalysis.js
+          // uses this directly instead of re-deriving it from the raw
+          // White-signed bestEval/playedEval fields.
+          loss,
         });
       }
 
@@ -1098,4 +1143,4 @@ ${result.pv}`
       </div>
     </div>
   );
-              }
+}

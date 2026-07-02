@@ -22,14 +22,23 @@ import { createStockfish } from '../engine/stockfishBot';
 // ============================================
 const PIECE_VALUES = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
 
+// FIX: depth values were previously up to 38, which single/few-thread
+// browser Stockfish 16 WASM cannot reach within the allotted searchTime
+// (realistically ~20-24 in 6-15s). Depth-only `go depth N` ignored
+// searchTime entirely, so the "elite" bots (Zenith/Phoenix/Beast) ran
+// until stockfishBot.js's SEARCH_TIMEOUT force-killed them and fell back
+// to shallow, weak partial multipv lines — this was the actual cause of
+// the top bots playing badly. Depths below are now realistic ceilings for
+// the paired movetime budgets (stockfishBot.js's search() also now sends
+// `go depth N movetime T` together, so whichever limit hits first wins).
 const BOTS = [
   { id: 'astra', name: 'Astra', emoji: '🌱', label: 'Beginner', depth: 8, searchTime: 300, topMovePool: 25, personality: 'Greedy but clumsy.' },
-  { id: 'orion', name: 'Orion', emoji: '⭐', label: 'Easy', depth: 14, searchTime: 800, topMovePool: 20, personality: "Human-like tactical misses." },
-  { id: 'titanx', name: 'TitanX', emoji: '⚔️', label: 'Intermediate', depth: 20, searchTime: 1500, topMovePool: 15, personality: 'Strong but prone to inaccuracies.' },
-  { id: 'vortex', name: 'Vortex', emoji: '🌪️', label: 'Advanced', depth: 26, searchTime: 3000, topMovePool: 10, personality: 'High precision, top-4 variance.' },
-  { id: 'zenith', name: 'Zenith', emoji: '👑', label: 'Master', depth: 32, searchTime: 6000, topMovePool: 6, personality: 'GM-weighted distribution.' },
-  { id: 'phoenix', name: 'Phoenix Prime', emoji: '🔥', label: 'Maximum', depth: 35, searchTime: 12000, topMovePool: 3, personality: 'The Human Super-GM.' },
-  { id: 'beast', name: 'The Beast of Baku', emoji: '🐉', label: 'Impossible', depth: 38, searchTime: 10000, topMovePool: 1, personality: 'Absolute engine perfection.' }
+  { id: 'orion', name: 'Orion', emoji: '⭐', label: 'Easy', depth: 12, searchTime: 800, topMovePool: 20, personality: "Human-like tactical misses." },
+  { id: 'titanx', name: 'TitanX', emoji: '⚔️', label: 'Intermediate', depth: 16, searchTime: 1500, topMovePool: 15, personality: 'Strong but prone to inaccuracies.' },
+  { id: 'vortex', name: 'Vortex', emoji: '🌪️', label: 'Advanced', depth: 18, searchTime: 3000, topMovePool: 10, personality: 'High precision, top-4 variance.' },
+  { id: 'zenith', name: 'Zenith', emoji: '👑', label: 'Master', depth: 20, searchTime: 6000, topMovePool: 6, personality: 'GM-weighted distribution.' },
+  { id: 'phoenix', name: 'Phoenix Prime', emoji: '🔥', label: 'Maximum', depth: 22, searchTime: 12000, topMovePool: 3, personality: 'The Human Super-GM.' },
+  { id: 'beast', name: 'The Beast of Baku', emoji: '🐉', label: 'Impossible', depth: 24, searchTime: 15000, topMovePool: 1, personality: 'Absolute engine perfection.' }
 ];
 
 const getSmartFallback = (fen) => {

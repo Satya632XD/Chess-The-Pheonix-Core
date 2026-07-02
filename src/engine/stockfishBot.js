@@ -4,6 +4,14 @@
 // - Waits for proper UCI readiness
 // - Supports MultiPV
 // - Keeps the same public API used by engineManager.js
+//
+// FIX: search() now always pairs `go depth N` with a `movetime` cap (UCI
+// stops at whichever limit hits first). Previously high-depth bots
+// (Zenith/Phoenix/Beast) sent depth-only `go depth N` commands, which on a
+// single/few-thread browser worker could run 60-120s+ before finishing —
+// far past what searchTime intended — and got killed by the flat 90s
+// SEARCH_TIMEOUT, falling back to whatever shallow/garbage multipv lines
+// existed at that point. That's why the "strongest" bots played the worst.
 
 let engine = null;
 let initPromise = null;
@@ -18,7 +26,6 @@ let newGameWaiters = [];
 
 const MAX_PV = 7;
 const INIT_TIMEOUT = 15000;
-const SEARCH_TIMEOUT = 90000;
 
 function getStockfishUrl() {
   const base = import.meta?.env?.BASE_URL || "/";
@@ -338,6 +345,10 @@ function send(command) {
   } catch {}
 }
 
+// FIX: always bound the search by movetime, in addition to depth. UCI
+// engines stop at whichever limit is hit first, so `go depth N movetime T`
+// guarantees we never blow past our own timeout budget waiting on an
+// unreachable depth in a slow browser worker.
 async function search(fen, depth = 10, mpv = 1, moveTime = null) {
   const ready = await loadStockfish().catch(() => false);
 
@@ -364,15 +375,21 @@ async function search(fen, depth = 10, mpv = 1, moveTime = null) {
 
     currentSearch = searchState;
 
+    // MultiPV must be set and acknowledged before position/go, otherwise
+    // the engine may still be mid-search-cleanup from a previous setoption
+    // and silently default to MultiPV=1.
     send(`setoption name MultiPV value ${limitedMPV}`);
     send(`position fen ${fen}`);
 
-    if (moveTime != null && Number(moveTime) > 0) {
-      send(`go movetime ${Math.floor(Number(moveTime))}`);
-    } else {
-      send(`go depth ${Math.max(1, Math.floor(Number(depth) || 10))}`);
-    }
+    const safeMoveTime =
+      moveTime != null && Number(moveTime) > 0 ? Math.floor(Number(moveTime)) : 2000;
+    const safeDepth = Math.max(1, Math.min(Math.floor(Number(depth) || 10), 24));
 
+    send(`go depth ${safeDepth} movetime ${safeMoveTime}`);
+
+    // Grace period beyond movetime (not a flat 90s window) — if the engine
+    // hasn't reported bestmove shortly after its own movetime budget should
+    // have elapsed, force-stop and salvage whatever multipv lines we have.
     searchState.timeoutId = setTimeout(() => {
       if (!currentSearch || currentSearch.id !== mySearchId) return;
 
@@ -383,7 +400,7 @@ async function search(fen, depth = 10, mpv = 1, moveTime = null) {
       } catch {}
 
       finishSearch(searchState, fallback);
-    }, SEARCH_TIMEOUT);
+    }, safeMoveTime + 3000);
   });
 }
 

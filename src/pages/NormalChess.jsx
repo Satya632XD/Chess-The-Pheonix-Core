@@ -22,47 +22,48 @@ import { createStockfish } from '../engine/stockfishBot';
 // ============================================
 const PIECE_VALUES = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
 
-// FIX: depth values were previously up to 38, which single/few-thread
-// browser Stockfish 16 WASM cannot reach within the allotted searchTime
-// (realistically ~20-24 in 6-15s). Depth-only `go depth N` ignored
-// searchTime entirely, so the "elite" bots (Zenith/Phoenix/Beast) ran
-// until stockfishBot.js's SEARCH_TIMEOUT force-killed them and fell back
-// to shallow, weak partial multipv lines.
-//
-// FIX (this pass): topMovePool for Zenith/Phoenix reduced to 1, matching
-// Beast. MultiPV > 1 forces Stockfish to split search effort maintaining
-// multiple full principal variations instead of concentrating on the
-// single best line — this measurably weakens best-move quality at a fixed
-// depth/time budget, which is backwards for your two strongest bots below
-// Beast. Bot "personality" (occasional weaker moves) is now expressed via
-// evalGapCp below instead of via MultiPV breadth.
-//
-// evalGapCp: the maximum eval loss (in centipawns, from the mover's own
-// perspective) a bot is willing to accept when its personality roll says
-// "play something other than the top move." If the gap between the best
-// line and the candidate line exceeds this, the bot plays the best move
-// anyway — this is what stops "sometimes plays weaker for realism" from
-// turning into "sometimes throws away a queen for realism."
 const BOTS = [
   { id: 'astra', name: 'Astra', emoji: '🌱', label: 'Beginner', depth: 8, searchTime: 300, topMovePool: 25, evalGapCp: 400, personality: 'Greedy but clumsy.' },
   { id: 'orion', name: 'Orion', emoji: '⭐', label: 'Easy', depth: 12, searchTime: 800, topMovePool: 20, evalGapCp: 250, personality: "Human-like tactical misses." },
   { id: 'titanx', name: 'TitanX', emoji: '⚔️', label: 'Intermediate', depth: 16, searchTime: 1500, topMovePool: 15, evalGapCp: 150, personality: 'Strong but prone to inaccuracies.' },
   { id: 'vortex', name: 'Vortex', emoji: '🌪️', label: 'Advanced', depth: 18, searchTime: 3000, topMovePool: 10, evalGapCp: 80, personality: 'High precision, top-4 variance.' },
   { id: 'zenith', name: 'Zenith', emoji: '👑', label: 'Master', depth: 20, searchTime: 6000, topMovePool: 1, evalGapCp: 40, personality: 'GM-weighted distribution.' },
+  // FIX: depth left as-is (movetime governs actual stop point anyway) but
+  // flagged so the outer race below gives it proper room.
   { id: 'phoenix', name: 'Phoenix Prime', emoji: '🔥', label: 'Maximum', depth: 22, searchTime: 12000, topMovePool: 1, evalGapCp: 20, personality: 'The Human Super-GM.' },
+  // FIX: 24/15000 was being starved by a flat 15000ms outer race that
+  // raced against (and could beat) the engine's own 15000+3000=18000ms
+  // internal grace timeout. Keep searchTime the same (it's a genuine
+  // design choice for bot strength) but let the OUTER race scale with it
+  // instead of hardcoding a number that happens to undercut it.
   { id: 'beast', name: 'The Beast of Baku', emoji: '🐉', label: 'Impossible', depth: 24, searchTime: 15000, topMovePool: 1, evalGapCp: 0, personality: 'Absolute engine perfection.' }
 ];
 
-const getSmartFallback = (fen) => {
+// NEW: derive the outer race timeout FROM the bot's own searchTime, with
+// margin above stockfishBot.js's internal grace period (searchTime + 3000),
+// instead of a flat constant that can undercut it.
+const getEngineRaceTimeout = (bot) => (bot.searchTime || 2000) + 5000;
+
+// FIX: was silent. Now logs loudly so fallback firing is never invisible,
+// and adds a jitter term so the fallback doesn't deterministically repeat
+// the same move when no capture/check is available.
+const getSmartFallback = (fen, reason = 'unknown', botId = 'unknown') => {
+  console.warn(
+    `[ENGINE FALLBACK] bot=${botId} reason=${reason} fen=${fen} — using heuristic move selection, NOT Stockfish output.`
+  );
+
   const tempGame = new Chess(fen);
   const moves = tempGame.moves({ verbose: true });
   if (!moves.length) return null;
+
+  const jitter = () => Math.random() * 0.01;
+
   return [...moves].sort((a, b) => {
     if (a.san.includes('#')) return -1;
     if (b.san.includes('#')) return 1;
-    const aVal = a.captured ? PIECE_VALUES[a.captured] : 0;
-    const bVal = b.captured ? PIECE_VALUES[b.captured] : 0;
-    if (aVal !== bVal) return bVal - aVal;
+    const aVal = (a.captured ? PIECE_VALUES[a.captured] : 0) + jitter();
+    const bVal = (b.captured ? PIECE_VALUES[b.captured] : 0) + jitter();
+    if (Math.abs(aVal - bVal) > 0.005) return bVal - aVal;
     return (a.san.includes('+') ? -1 : 1) - (b.san.includes('+') ? -1 : 1);
   })[0];
 };
@@ -86,34 +87,15 @@ const playSfx = {
   start: throttledSound(playGameStartSound)
 };
 
-// FIX (new): eval-gap-aware weighted move picker, replacing the old
-// unconditional `safeMove(idx)` calls.
-//
-// `pool` is the array of {move, eval} objects returned by
-// getBestMoveFromPool, already filtered/mapped to chess.js move objects
-// with `.engineEval` attached (see triggerBot below) and sorted
-// best-first (pool[0] is the engine's top choice).
-//
-// A bot's personality roll may propose picking pool[idx] instead of
-// pool[0], but that substitution is only honored if:
-//   1. pool[idx] actually exists, and
-//   2. the eval loss vs pool[0] is within the bot's evalGapCp budget.
-// Otherwise we fall back to pool[0] (or the closest earlier index that
-// does satisfy the gap, so a bot doesn't collapse straight to "always
-// best" the instant its first-choice downgrade fails the check).
 function pickWithinGap(pool, idx, evalGapCp) {
   if (!pool.length) return null;
   const best = pool[0];
   if (idx <= 0 || idx >= pool.length) return best;
 
-  // Walk from the proposed index back toward 0, taking the first
-  // candidate whose eval loss vs best is within budget. This keeps the
-  // "personality" flavor (still prefers a weaker-than-best move when
-  // asked) while guaranteeing we never silently blunder past evalGapCp.
   for (let i = idx; i > 0; i--) {
     const candidate = pool[i];
     if (!candidate || candidate.engineEval == null || best.engineEval == null) continue;
-    const loss = best.engineEval - candidate.engineEval; // positive = candidate is worse
+    const loss = best.engineEval - candidate.engineEval;
     if (loss <= evalGapCp) return candidate;
   }
   return best;
@@ -316,17 +298,18 @@ export default function NormalChess({ timerMode, onBack }) {
       if (!allMoves.length) return;
 
       engineBusyRef.current = true;
+
+      // FIX: race timeout now scales with the bot's own searchTime instead
+      // of a flat 15000ms that could undercut Beast's internal grace period.
+      const raceTimeoutMs = getEngineRaceTimeout(bot);
+
       const rawPool = await Promise.race([
         currentEngine.getBestMoveFromPool(fen, bot.depth, bot.topMovePool, bot.searchTime),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Engine timeout')), 15000))
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Engine timeout')), raceTimeoutMs))
       ]);
 
       if (currentEngine !== engineRef.current || myId !== analysisIdRef.current || gameOverRef.current) return;
 
-      // FIX: rawPool is now an array of {move, eval} objects (see
-      // stockfishBot.js). Map each to its chess.js move object and carry
-      // the eval along as `.engineEval` so pickWithinGap can compare
-      // candidates without re-querying the engine.
       const engineMoves = Array.isArray(rawPool)
         ? rawPool
             .map(entry => {
@@ -339,16 +322,12 @@ export default function NormalChess({ timerMode, onBack }) {
             .filter(Boolean)
         : [];
 
-      let finalMove = engineMoves[0] || getSmartFallback(fen);
+      // FIX: pass reason + bot.id so fallback firing is traceable to WHICH
+      // bot and WHY (empty pool vs. exception, handled separately below).
+      let finalMove = engineMoves[0] || getSmartFallback(fen, 'empty-pool', bot.id);
 
       if (!finalMove || gameRef.current.fen() !== fen) return;
 
-      // FIX: every branch below now routes through pickWithinGap(), which
-      // refuses to substitute a "personality" move that costs more than
-      // bot.evalGapCp centipawns versus the engine's actual best move.
-      // Previously these branches called safeMove(idx) unconditionally,
-      // which could hand away a queen or miss a mate purely on a dice
-      // roll — that's why "strong" bots were sometimes blundering.
       if (engineMoves.length > 0) {
         const r = Math.random();
         const totalMoves = allMoves.length;
@@ -384,9 +363,6 @@ export default function NormalChess({ timerMode, onBack }) {
           finalMove = engineMoves[0];
         }
 
-        // Belt-and-suspenders: any of the pickWithinGap branches above
-        // could in principle return null if engineMoves got mutated
-        // unexpectedly — never let a null slip through to game.move().
         if (!finalMove) finalMove = engineMoves[0];
       }
 
@@ -396,16 +372,23 @@ export default function NormalChess({ timerMode, onBack }) {
 
     } catch (e) {
       if (currentEngine !== engineRef.current || myId !== analysisIdRef.current || gameOverRef.current) return;
-      const oldEngine = engineRef.current;
-      try { oldEngine?.stop?.(); oldEngine?.terminate?.(); } catch {}
-      engineRef.current = createStockfish();
 
-      const fb = getSmartFallback(fen);
+      // FIX: no longer terminates and recreates the engine on every
+      // timeout/error. A `stop` is enough to cancel the in-flight search;
+      // the worker itself is still fine and stays warm for the next move.
+      // We only ever fully recreate the engine if it's provably dead (see
+      // stockfishBot.js's own `failed` flag via a dedicated health check,
+      // not automatically here).
+      console.warn(`[ENGINE ERROR] bot=${bot.id}`, e?.message || e);
+      try { currentEngine.stop?.(); } catch {}
+
+      const fb = getSmartFallback(fen, 'exception', bot.id);
       if (fb && gameRef.current.fen() === fen) {
         const n = new Chess(fen);
         const r = n.move(fb);
         if (r) enqueue(() => applySideEffectsRef.current(n, r, false, myId));
       }
+
     } finally {
       engineBusyRef.current = false;
       if (myId === analysisIdRef.current && mountedRef.current) {
@@ -577,42 +560,42 @@ export default function NormalChess({ timerMode, onBack }) {
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
-       <GameHeader mode="normal" onBack={() => { engineRef.current?.stop?.(); clearAllAsync(); onBack(); }} botName={selectedBot.name} />
-       <div className="flex-1 flex flex-col lg:flex-row items-center justify-center gap-8 p-4">
-          <div className="relative flex flex-col items-center gap-4">
-            <div className="flex items-center gap-3 w-full px-2">
-              <span className="text-2xl">{selectedBot.emoji}</span>
-              <span className="font-bold text-xl flex-1">{selectedBot.name}</span>
-              {isThinking && <span className="text-xs font-mono px-3 py-1 rounded-full border text-primary animate-pulse">THINKING {thinkTime}s</span>}
-            </div>
-            <ChessBoard {...boardProps} onSquareClick={handleSquareClick} />
-            {promotionMove && (
-              <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/60 backdrop-blur-sm">
-                <div className="flex gap-4 p-6 bg-card rounded-2xl border shadow-2xl">
-                  {['q', 'r', 'b', 'n'].map(p => (
-                    <button key={p} onClick={() => {
-                        const n = new Chess(gameRef.current.fen());
-                        const r = n.move({ ...promotionMove, promotion: p });
-                        if (r) enqueue(() => applySideEffectsRef.current(n, r));
-                        if (mountedRef.current) setPromotionMove(null);
-                    }} className="text-4xl hover:scale-125 transition">
-                      {p === 'q' ? '♛' : p === 'r' ? '♜' : p === 'b' ? '♝' : '♞'}
-                    </button>
-                  ))}
-                </div>
+      <GameHeader mode="normal" onBack={() => { engineRef.current?.stop?.(); clearAllAsync(); onBack(); }} botName={selectedBot.name} />
+      <div className="flex-1 flex flex-col lg:flex-row items-center justify-center gap-8 p-4">
+        <div className="relative flex flex-col items-center gap-4">
+          <div className="flex items-center gap-3 w-full px-2">
+            <span className="text-2xl">{selectedBot.emoji}</span>
+            <span className="font-bold text-xl flex-1">{selectedBot.name}</span>
+            {isThinking && <span className="text-xs font-mono px-3 py-1 rounded-full border text-primary animate-pulse">THINKING {thinkTime}s</span>}
+          </div>
+          <ChessBoard {...boardProps} onSquareClick={handleSquareClick} />
+          {promotionMove && (
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/60 backdrop-blur-sm">
+              <div className="flex gap-4 p-6 bg-card rounded-2xl border shadow-2xl">
+                {['q', 'r', 'b', 'n'].map(p => (
+                  <button key={p} onClick={() => {
+                    const n = new Chess(gameRef.current.fen());
+                    const r = n.move({ ...promotionMove, promotion: p });
+                    if (r) enqueue(() => applySideEffectsRef.current(n, r));
+                    if (mountedRef.current) setPromotionMove(null);
+                  }} className="text-4xl hover:scale-125 transition">
+                    {p === 'q' ? '♛' : p === 'r' ? '♜' : p === 'b' ? '♝' : '♞'}
+                  </button>
+                ))}
               </div>
-            )}
-          </div>
-          <div className="flex flex-col gap-4 w-full max-w-xs">
-            <GameTimer whiteTime={whiteTime} blackTime={blackTime} activeColor={game.turn()} isRunning={timerRunning} />
-            <div className="grid grid-cols-2 gap-2">
-              <button onClick={handleUndo} disabled={isThinking || positionHistory.length < 2} className="py-3 rounded-xl bg-secondary font-bold">Undo</button>
-              <button onClick={() => initializeGame(playerColor, selectedBot)} className="py-3 rounded-xl bg-secondary font-bold">Restart</button>
             </div>
-            <div className="h-64 border rounded-xl overflow-hidden bg-card"><MoveHistory history={history} /></div>
+          )}
+        </div>
+        <div className="flex flex-col gap-4 w-full max-w-xs">
+          <GameTimer whiteTime={whiteTime} blackTime={blackTime} activeColor={game.turn()} isRunning={timerRunning} />
+          <div className="grid grid-cols-2 gap-2">
+            <button onClick={handleUndo} disabled={isThinking || positionHistory.length < 2} className="py-3 rounded-xl bg-secondary font-bold">Undo</button>
+            <button onClick={() => initializeGame(playerColor, selectedBot)} className="py-3 rounded-xl bg-secondary font-bold">Restart</button>
           </div>
-       </div>
-       <GameOverModal result={gameOver?.result} reason={gameOver?.reason} onRematch={() => initializeGame(playerColor, selectedBot)} onMenu={onBack} />
+          <div className="h-64 border rounded-xl overflow-hidden bg-card"><MoveHistory history={history} /></div>
+        </div>
+      </div>
+      <GameOverModal result={gameOver?.result} reason={gameOver?.reason} onRematch={() => initializeGame(playerColor, selectedBot)} onMenu={onBack} />
     </div>
   );
 }

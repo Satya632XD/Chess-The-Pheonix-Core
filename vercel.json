@@ -12,6 +12,15 @@
           "value": "require-corp"
         }
       ]
+    },
+    {
+      "source": "/(.*)\\.(wasm|js|worker.js)",
+      "headers": [
+        {
+          "key": "Cross-Origin-Resource-Policy",
+          "value": "same-origin"
+        }
+      ]
     }
   ]
 }

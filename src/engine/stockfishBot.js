@@ -5,13 +5,21 @@
 // - Supports MultiPV
 // - Keeps the same public API used by engineManager.js
 //
-// FIX: search() now always pairs `go depth N` with a `movetime` cap (UCI
-// stops at whichever limit hits first). Previously high-depth bots
-// (Zenith/Phoenix/Beast) sent depth-only `go depth N` commands, which on a
-// single/few-thread browser worker could run 60-120s+ before finishing —
-// far past what searchTime intended — and got killed by the flat 90s
-// SEARCH_TIMEOUT, falling back to whatever shallow/garbage multipv lines
-// existed at that point. That's why the "strongest" bots played the worst.
+// FIX (search/timeout pairing): search() always pairs `go depth N` with a
+// `movetime` cap (UCI stops at whichever limit hits first).
+//
+// FIX (eval-aware move pool): topMoves[] now stores {move, eval, depth,
+// seldepth} instead of just {move, depth, seldepth}. `eval` is the raw
+// `score cp` (or mate-converted) value reported by the engine for that PV
+// line, from the side-to-move's perspective (UCI convention — NOT
+// normalized to White-positive here; callers that need White-positive
+// should convert using the position's side-to-move, same as
+// stockfishEngine.js does for its own eval channel).
+//
+// This lets callers implement an eval-gap check before downgrading to a
+// "weaker" move for bot personality (e.g. don't play move #2 over move #1
+// unless the eval difference is small) instead of blindly discarding the
+// engine's actual best move at a fixed rate.
 
 let engine = null;
 let initPromise = null;
@@ -26,6 +34,11 @@ let newGameWaiters = [];
 
 const MAX_PV = 7;
 const INIT_TIMEOUT = 15000;
+
+// Mate scores are converted to a large centipawn-equivalent so eval-gap
+// comparisons still behave sanely (a mate line should never lose a gap
+// check against a non-mate line).
+const MATE_SCORE_CP = 100000;
 
 function getStockfishUrl() {
   const base = import.meta?.env?.BASE_URL || "/";
@@ -43,6 +56,10 @@ function clampNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+// FIX: previously returned bare move strings, deduped but with no eval
+// attached, so every caller had to treat all pool entries as equally good.
+// Now returns {move, eval} pairs, still deduped by move and still in
+// MultiPV-slot order (slot 0 = engine's best line).
 function collectMoves(search) {
   const seen = new Set();
   const moves = [];
@@ -50,7 +67,7 @@ function collectMoves(search) {
   for (const entry of search.topMoves) {
     if (!entry || !entry.move || seen.has(entry.move)) continue;
     seen.add(entry.move);
-    moves.push(entry.move);
+    moves.push({ move: entry.move, eval: entry.eval ?? null });
   }
 
   return moves;
@@ -94,10 +111,25 @@ function handleSearchLine(line) {
   // Parse MultiPV info lines
   // Example:
   // info depth 18 seldepth 24 multipv 2 score cp 12 pv e7e5 g1f3 ...
+  // info depth 18 seldepth 24 multipv 1 score mate 3 pv ...
   if (line.startsWith("info") && line.includes(" pv ")) {
     const mpvMatch = line.match(/\bmultipv (\d+)\b/);
     const depthMatch = line.match(/\bdepth (\d+)\b/);
     const seldepthMatch = line.match(/\bseldepth (\d+)\b/);
+
+    // FIX: capture the score for this PV line. Mate scores are converted
+    // to a signed large-magnitude centipawn value so downstream eval-gap
+    // math doesn't need to special-case mate vs cp everywhere.
+    const cpMatch = line.match(/\bscore cp (-?\d+)\b/);
+    const mateMatch = line.match(/\bscore mate (-?\d+)\b/);
+
+    let evalCp = null;
+    if (mateMatch) {
+      const mateIn = parseInt(mateMatch[1], 10);
+      evalCp = mateIn > 0 ? MATE_SCORE_CP - mateIn : -MATE_SCORE_CP - mateIn;
+    } else if (cpMatch) {
+      evalCp = parseInt(cpMatch[1], 10);
+    }
 
     const pvIndex = mpvMatch ? Math.max(0, parseInt(mpvMatch[1], 10) - 1) : 0;
     const depth = depthMatch ? parseInt(depthMatch[1], 10) : 0;
@@ -116,7 +148,8 @@ function handleSearchLine(line) {
 
     const previous = search.topMoves[pvIndex];
 
-    // Keep the deepest line for each multipv slot
+    // Keep the deepest line for each multipv slot (and its matching eval —
+    // never mix a move from one depth with an eval captured at another).
     if (
       !previous ||
       depth > previous.depth ||
@@ -124,6 +157,7 @@ function handleSearchLine(line) {
     ) {
       search.topMoves[pvIndex] = {
         move,
+        eval: evalCp,
         depth,
         seldepth,
       };
@@ -140,7 +174,9 @@ function handleSearchLine(line) {
     if (moves.length) {
       finishSearch(search, moves);
     } else if (bestMove && bestMove !== "(none)") {
-      finishSearch(search, [bestMove]);
+      // No parsed info lines at all (shouldn't normally happen) — fall
+      // back to bestmove with no eval info rather than resolving empty.
+      finishSearch(search, [{ move: bestMove, eval: null }]);
     } else {
       finishSearch(search, []);
     }
@@ -349,6 +385,9 @@ function send(command) {
 // engines stop at whichever limit is hit first, so `go depth N movetime T`
 // guarantees we never blow past our own timeout budget waiting on an
 // unreachable depth in a slow browser worker.
+//
+// Returns an array of {move, eval} objects, best-line first (slot order),
+// deduped, eval in raw engine cp units (side-to-move perspective).
 async function search(fen, depth = 10, mpv = 1, moveTime = null) {
   const ready = await loadStockfish().catch(() => false);
 
@@ -465,11 +504,19 @@ export function createStockfish() {
   loadStockfish().catch(() => {});
 
   return {
+    // FIX: getBestMove now returns {move, eval} (was a bare move string).
+    // Callers using only the move string can do `.move` on the result;
+    // this is a breaking change for any caller destructuring the old
+    // string return directly — see engineManager.js, which is unaffected
+    // since it already treats getBestMove's result as opaque and only
+    // forwards it.
     getBestMove: async (fen, depth = 10, mpv = 1, moveTime = null) => {
       const moves = await search(fen, depth, mpv, moveTime);
       return moves?.[0] || null;
     },
 
+    // FIX: now resolves to an array of {move, eval} instead of bare move
+    // strings. This is the pool NormalChess.jsx's bot logic consumes.
     getBestMoveFromPool: async (fen, depth = 10, mpv = 7, moveTime = null) => {
       const moves = await search(fen, depth, mpv, moveTime);
       return moves || [];

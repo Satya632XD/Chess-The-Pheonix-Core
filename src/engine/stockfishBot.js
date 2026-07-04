@@ -526,5 +526,10 @@ export function createStockfish() {
     stop,
     newGame,
     terminate,
+
+    // NEW: exposes the module-level `failed` flag so callers can decide
+    // whether a rebuild is actually warranted, instead of rebuilding
+    // unconditionally on every timeout/error.
+    isHealthy: () => initialized && !failed,
   };
 }

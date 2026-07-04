@@ -27,18 +27,30 @@ const PIECE_VALUES = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
 // (realistically ~20-24 in 6-15s). Depth-only `go depth N` ignored
 // searchTime entirely, so the "elite" bots (Zenith/Phoenix/Beast) ran
 // until stockfishBot.js's SEARCH_TIMEOUT force-killed them and fell back
-// to shallow, weak partial multipv lines — this was the actual cause of
-// the top bots playing badly. Depths below are now realistic ceilings for
-// the paired movetime budgets (stockfishBot.js's search() also now sends
-// `go depth N movetime T` together, so whichever limit hits first wins).
+// to shallow, weak partial multipv lines.
+//
+// FIX (this pass): topMovePool for Zenith/Phoenix reduced to 1, matching
+// Beast. MultiPV > 1 forces Stockfish to split search effort maintaining
+// multiple full principal variations instead of concentrating on the
+// single best line — this measurably weakens best-move quality at a fixed
+// depth/time budget, which is backwards for your two strongest bots below
+// Beast. Bot "personality" (occasional weaker moves) is now expressed via
+// evalGapCp below instead of via MultiPV breadth.
+//
+// evalGapCp: the maximum eval loss (in centipawns, from the mover's own
+// perspective) a bot is willing to accept when its personality roll says
+// "play something other than the top move." If the gap between the best
+// line and the candidate line exceeds this, the bot plays the best move
+// anyway — this is what stops "sometimes plays weaker for realism" from
+// turning into "sometimes throws away a queen for realism."
 const BOTS = [
-  { id: 'astra', name: 'Astra', emoji: '🌱', label: 'Beginner', depth: 8, searchTime: 300, topMovePool: 25, personality: 'Greedy but clumsy.' },
-  { id: 'orion', name: 'Orion', emoji: '⭐', label: 'Easy', depth: 12, searchTime: 800, topMovePool: 20, personality: "Human-like tactical misses." },
-  { id: 'titanx', name: 'TitanX', emoji: '⚔️', label: 'Intermediate', depth: 16, searchTime: 1500, topMovePool: 15, personality: 'Strong but prone to inaccuracies.' },
-  { id: 'vortex', name: 'Vortex', emoji: '🌪️', label: 'Advanced', depth: 18, searchTime: 3000, topMovePool: 10, personality: 'High precision, top-4 variance.' },
-  { id: 'zenith', name: 'Zenith', emoji: '👑', label: 'Master', depth: 20, searchTime: 6000, topMovePool: 6, personality: 'GM-weighted distribution.' },
-  { id: 'phoenix', name: 'Phoenix Prime', emoji: '🔥', label: 'Maximum', depth: 22, searchTime: 12000, topMovePool: 3, personality: 'The Human Super-GM.' },
-  { id: 'beast', name: 'The Beast of Baku', emoji: '🐉', label: 'Impossible', depth: 24, searchTime: 15000, topMovePool: 1, personality: 'Absolute engine perfection.' }
+  { id: 'astra', name: 'Astra', emoji: '🌱', label: 'Beginner', depth: 8, searchTime: 300, topMovePool: 25, evalGapCp: 400, personality: 'Greedy but clumsy.' },
+  { id: 'orion', name: 'Orion', emoji: '⭐', label: 'Easy', depth: 12, searchTime: 800, topMovePool: 20, evalGapCp: 250, personality: "Human-like tactical misses." },
+  { id: 'titanx', name: 'TitanX', emoji: '⚔️', label: 'Intermediate', depth: 16, searchTime: 1500, topMovePool: 15, evalGapCp: 150, personality: 'Strong but prone to inaccuracies.' },
+  { id: 'vortex', name: 'Vortex', emoji: '🌪️', label: 'Advanced', depth: 18, searchTime: 3000, topMovePool: 10, evalGapCp: 80, personality: 'High precision, top-4 variance.' },
+  { id: 'zenith', name: 'Zenith', emoji: '👑', label: 'Master', depth: 20, searchTime: 6000, topMovePool: 1, evalGapCp: 40, personality: 'GM-weighted distribution.' },
+  { id: 'phoenix', name: 'Phoenix Prime', emoji: '🔥', label: 'Maximum', depth: 22, searchTime: 12000, topMovePool: 1, evalGapCp: 20, personality: 'The Human Super-GM.' },
+  { id: 'beast', name: 'The Beast of Baku', emoji: '🐉', label: 'Impossible', depth: 24, searchTime: 15000, topMovePool: 1, evalGapCp: 0, personality: 'Absolute engine perfection.' }
 ];
 
 const getSmartFallback = (fen) => {
@@ -73,6 +85,39 @@ const playSfx = {
   checkmate: throttledSound(playCheckmateSound),
   start: throttledSound(playGameStartSound)
 };
+
+// FIX (new): eval-gap-aware weighted move picker, replacing the old
+// unconditional `safeMove(idx)` calls.
+//
+// `pool` is the array of {move, eval} objects returned by
+// getBestMoveFromPool, already filtered/mapped to chess.js move objects
+// with `.engineEval` attached (see triggerBot below) and sorted
+// best-first (pool[0] is the engine's top choice).
+//
+// A bot's personality roll may propose picking pool[idx] instead of
+// pool[0], but that substitution is only honored if:
+//   1. pool[idx] actually exists, and
+//   2. the eval loss vs pool[0] is within the bot's evalGapCp budget.
+// Otherwise we fall back to pool[0] (or the closest earlier index that
+// does satisfy the gap, so a bot doesn't collapse straight to "always
+// best" the instant its first-choice downgrade fails the check).
+function pickWithinGap(pool, idx, evalGapCp) {
+  if (!pool.length) return null;
+  const best = pool[0];
+  if (idx <= 0 || idx >= pool.length) return best;
+
+  // Walk from the proposed index back toward 0, taking the first
+  // candidate whose eval loss vs best is within budget. This keeps the
+  // "personality" flavor (still prefers a weaker-than-best move when
+  // asked) while guaranteeing we never silently blunder past evalGapCp.
+  for (let i = idx; i > 0; i--) {
+    const candidate = pool[i];
+    if (!candidate || candidate.engineEval == null || best.engineEval == null) continue;
+    const loss = best.engineEval - candidate.engineEval; // positive = candidate is worse
+    if (loss <= evalGapCp) return candidate;
+  }
+  return best;
+}
 
 export default function NormalChess({ timerMode, onBack }) {
   // --- Core State ---
@@ -278,47 +323,71 @@ export default function NormalChess({ timerMode, onBack }) {
 
       if (currentEngine !== engineRef.current || myId !== analysisIdRef.current || gameOverRef.current) return;
 
+      // FIX: rawPool is now an array of {move, eval} objects (see
+      // stockfishBot.js). Map each to its chess.js move object and carry
+      // the eval along as `.engineEval` so pickWithinGap can compare
+      // candidates without re-querying the engine.
       const engineMoves = Array.isArray(rawPool)
-        ? rawPool.map(s => allMoves.find(m => (m.from + m.to + (m.promotion || '')) === s)).filter(Boolean)
+        ? rawPool
+            .map(entry => {
+              const moveObj = allMoves.find(
+                m => (m.from + m.to + (m.promotion || '')) === entry.move
+              );
+              if (!moveObj) return null;
+              return { ...moveObj, engineEval: entry.eval };
+            })
+            .filter(Boolean)
         : [];
 
-      const safeMove = (idx) => engineMoves[Math.min(idx, engineMoves.length - 1)] || engineMoves[0];
       let finalMove = engineMoves[0] || getSmartFallback(fen);
 
       if (!finalMove || gameRef.current.fen() !== fen) return;
 
+      // FIX: every branch below now routes through pickWithinGap(), which
+      // refuses to substitute a "personality" move that costs more than
+      // bot.evalGapCp centipawns versus the engine's actual best move.
+      // Previously these branches called safeMove(idx) unconditionally,
+      // which could hand away a queen or miss a mate purely on a dice
+      // roll — that's why "strong" bots were sometimes blundering.
       if (engineMoves.length > 0) {
         const r = Math.random();
         const totalMoves = allMoves.length;
+        const gap = bot.evalGapCp ?? 0;
 
         if (bot.id === 'astra') {
           if (r < 0.60) finalMove = allMoves[Math.floor(Math.random() * totalMoves)];
-          else if (r < 0.90) finalMove = safeMove(Math.floor(engineMoves.length * 0.7 + Math.random() * engineMoves.length * 0.3));
-          else finalMove = safeMove(Math.floor(Math.random() * Math.min(5, engineMoves.length)));
+          else if (r < 0.90) finalMove = pickWithinGap(engineMoves, Math.floor(engineMoves.length * 0.7 + Math.random() * engineMoves.length * 0.3), gap);
+          else finalMove = pickWithinGap(engineMoves, Math.floor(Math.random() * Math.min(5, engineMoves.length)), gap);
 
         } else if (bot.id === 'orion') {
           if (r < 0.25) finalMove = allMoves[Math.floor(Math.random() * totalMoves)];
-          else if (r < 0.65) finalMove = safeMove(Math.floor(engineMoves.length * 0.5 + Math.random() * engineMoves.length * 0.5));
-          else finalMove = safeMove(Math.floor(Math.random() * Math.min(6, engineMoves.length)));
+          else if (r < 0.65) finalMove = pickWithinGap(engineMoves, Math.floor(engineMoves.length * 0.5 + Math.random() * engineMoves.length * 0.5), gap);
+          else finalMove = pickWithinGap(engineMoves, Math.floor(Math.random() * Math.min(6, engineMoves.length)), gap);
 
         } else if (bot.id === 'titanx') {
           if (r < 0.08) finalMove = allMoves[Math.floor(Math.random() * totalMoves)];
-          else if (r < 0.33) finalMove = safeMove(Math.floor(Math.random() * Math.min(5, engineMoves.length)));
-          else finalMove = safeMove(r < 0.75 ? 1 : 0);
+          else if (r < 0.33) finalMove = pickWithinGap(engineMoves, Math.floor(Math.random() * Math.min(5, engineMoves.length)), gap);
+          else finalMove = pickWithinGap(engineMoves, r < 0.75 ? 1 : 0, gap);
 
         } else if (bot.id === 'vortex') {
-          finalMove = r < 0.05 ? safeMove(Math.floor(Math.random() * Math.min(4, engineMoves.length)))
-                                : safeMove(r < 0.60 ? 1 : 0);
+          finalMove = r < 0.05
+            ? pickWithinGap(engineMoves, Math.floor(Math.random() * Math.min(4, engineMoves.length)), gap)
+            : pickWithinGap(engineMoves, r < 0.60 ? 1 : 0, gap);
 
         } else if (bot.id === 'zenith') {
-          finalMove = r < 0.90 ? engineMoves[0] : safeMove(1);
+          finalMove = r < 0.90 ? engineMoves[0] : pickWithinGap(engineMoves, 1, gap);
 
         } else if (bot.id === 'phoenix') {
-          finalMove = r < 0.97 ? engineMoves[0] : safeMove(1);
+          finalMove = r < 0.97 ? engineMoves[0] : pickWithinGap(engineMoves, 1, gap);
 
         } else {
           finalMove = engineMoves[0];
         }
+
+        // Belt-and-suspenders: any of the pickWithinGap branches above
+        // could in principle return null if engineMoves got mutated
+        // unexpectedly — never let a null slip through to game.move().
+        if (!finalMove) finalMove = engineMoves[0];
       }
 
       const nextG = new Chess(fen);

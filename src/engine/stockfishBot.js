@@ -16,6 +16,18 @@
 // should convert using the position's side-to-move, same as
 // stockfishEngine.js does for its own eval channel).
 //
+// FIX (stale failure poisoning): previously, once the module-level `failed`
+// flag was set to true (e.g. because SharedArrayBuffer / cross-origin
+// isolation wasn't available yet when the engine first tried to init),
+// EVERY subsequent loadStockfish() call in the same page session would
+// immediately reject with "Stockfish previously failed to initialize."
+// without ever attempting a real init again — even if the underlying
+// cause (e.g. missing COOP/COEP headers) was fixed mid-session. `failed`
+// is now cleared whenever a fresh engine/Worker is created, so a retry
+// (e.g. starting a new game, which calls createStockfish() again) gets a
+// genuine new attempt instead of being permanently blocked by session
+// history.
+//
 // This lets callers implement an eval-gap check before downgrading to a
 // "weaker" move for bot personality (e.g. don't play move #2 over move #1
 // unless the eval difference is small) instead of blindly discarding the
@@ -208,6 +220,18 @@ function createEngine() {
     throw new Error("Web Workers are not supported in this browser.");
   }
 
+  // FIX: creating a fresh engine/Worker is an explicit retry attempt.
+  // Clear any stale failure state left over from a previous engine
+  // instance in this same page session (e.g. an earlier attempt that
+  // failed before cross-origin isolation / SharedArrayBuffer was
+  // available). Without this, `failed` stays true forever after the
+  // first failure and every future loadStockfish() call — even ones
+  // backed by a brand-new Worker that could succeed — gets rejected
+  // instantly by the `failed` guard in loadStockfish(), before ever
+  // trying to actually initialize.
+  failed = false;
+  initialized = false;
+
   const url = getStockfishUrl();
   const worker = new Worker(url);
 
@@ -335,10 +359,16 @@ async function loadStockfish() {
   if (initPromise) return initPromise;
 
   initPromise = new Promise(async (resolve, reject) => {
-    if (failed) {
-      reject(new Error("Stockfish previously failed to initialize."));
-      return;
-    }
+    // FIX: removed the old unconditional
+    //   if (failed) { reject(...); return; }
+    // guard here. That guard meant a single failure anywhere in a page
+    // session permanently blocked every future init attempt, even ones
+    // driven by a fresh createEngine() call (which now resets `failed`
+    // itself). Genuine failures still set `failed = true` in the catch
+    // block below and in createEngine()'s error/timeout handlers, so
+    // callers still get a real rejection when a NEW attempt genuinely
+    // fails — this just stops old, unrelated failures from silently
+    // poisoning attempts that were never given a chance to run.
 
     try {
       if (!engine) {
@@ -527,7 +557,7 @@ export function createStockfish() {
     newGame,
     terminate,
 
-    // NEW: exposes the module-level `failed` flag so callers can decide
+    // Exposes the module-level `failed` flag so callers can decide
     // whether a rebuild is actually warranted, instead of rebuilding
     // unconditionally on every timeout/error.
     isHealthy: () => initialized && !failed,

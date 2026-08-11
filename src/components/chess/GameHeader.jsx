@@ -7,7 +7,11 @@ export default function GameHeader({ mode, onBack, botName, gameStatus }) {
         ← Menu
       </button>
       <h2 className="flex-1 text-center font-bold text-foreground">
-        {mode === 'phoenix' ? '🔥 Phoenix Core' : `♟ vs ${botName}`}
+        {mode === 'phoenix'
+          ? '🔥 Phoenix Core'
+          : mode === 'analysis'
+          ? '🔍 Analysis Mode'
+          : `♟ vs ${botName}`}
       </h2>
       {gameStatus && (
         <span className="text-xs font-bold text-red-400">{gameStatus}</span>
